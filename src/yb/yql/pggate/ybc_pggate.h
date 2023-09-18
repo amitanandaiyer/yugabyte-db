@@ -701,6 +701,14 @@ YBCStatus YBCPrefetchRegisteredSysTables();
 
 YBCStatus YBCPgCheckIfPitrActive(bool* is_active);
 
+YBCStatus YBCActiveUniverseHistory(YBCAUHDescriptor **rpcs, size_t* numrpcs);
+
+YBCStatus YBCSetTopLevelNodeId();
+
+void YBCSetQueryId(int64_t query_id);
+
+void YBCSetTopLevelRequestId();
+
 YBCStatus YBCIsObjectPartOfXRepl(YBCPgOid database_oid, YBCPgOid table_oid,
                                  bool* is_object_part_of_xrepl);
 

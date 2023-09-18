@@ -730,6 +730,8 @@ Result<PerformFuture> PgSession::Perform(BufferableOperations&& ops, PerformOpti
   }
   options.set_trace_requested(pg_txn_manager_->ShouldEnableTracing());
 
+  auh_metadata_.ToPB(options.mutable_auh_metadata());
+
   if (ops_options.cache_options) {
     auto& cache_options = *ops_options.cache_options;
     auto& caching_info = *options.mutable_caching_info();
@@ -757,7 +759,7 @@ Result<PerformFuture> PgSession::Perform(BufferableOperations&& ops, PerformOpti
   pg_client_.PerformAsync(&options, &ops.operations, [promise](const PerformResult& result) {
     promise->set_value(result);
   });
-  return PerformFuture(promise->get_future(), this, std::move(ops.relations));
+  return PerformFuture(promise->get_future(), this, std::move(ops.relations), ops.wait_event_);
 }
 
 Result<bool> PgSession::ForeignKeyReferenceExists(const LightweightTableYbctid& key,
@@ -969,6 +971,25 @@ Result<PerformFuture> PgSession::RunAsync(
 
 Result<bool> PgSession::CheckIfPitrActive() {
   return pg_client_.CheckIfPitrActive();
+}
+
+Result<client::RpcsInfo> PgSession::ActiveUniverseHistory() {
+  return pg_client_.ActiveUniverseHistory();
+}
+
+Status PgSession::SetTopLevelNodeId() {
+  auh_metadata_.top_level_node_id = VERIFY_RESULT(pg_client_.GetTServerUUID());
+  pg_callbacks_.ProcSetTopLevelNodeId(&auh_metadata_.top_level_node_id[0]);
+  return Status::OK();
+}
+
+void PgSession::SetQueryId(int64_t query_id) {
+  auh_metadata_.query_id = query_id;
+}
+
+void PgSession::SetTopLevelRequestId() {
+  auh_metadata_.top_level_request_id = {util::AUHRandom::GenerateRandom64(), util::AUHRandom::GenerateRandom64()};
+  pg_callbacks_.ProcSetTopLevelRequestId(auh_metadata_.top_level_request_id.data());
 }
 
 Result<bool> PgSession::IsObjectPartOfXRepl(const PgObjectId& table_id) {

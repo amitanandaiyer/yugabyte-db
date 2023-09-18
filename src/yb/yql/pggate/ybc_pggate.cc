@@ -1695,6 +1695,54 @@ YBCStatus YBCPgCheckIfPitrActive(bool* is_active) {
   return ToYBCStatus(res.status());
 }
 
+YBCStatus YBCActiveUniverseHistory(YBCAUHDescriptor **rpcs, size_t* count) {
+  const auto result = pgapi->ActiveUniverseHistory();
+  if (!result.ok()) {
+    return ToYBCStatus(result.status());
+  }
+  const auto &servers_info = result.get();
+  *count = servers_info.size();
+  *rpcs = NULL;
+  if (!servers_info.empty()) {
+    *rpcs = static_cast<YBCAUHDescriptor *>(
+        YBCPAlloc(sizeof(YBCAUHDescriptor) * servers_info.size()));
+    YBCAUHDescriptor *dest = *rpcs;
+    for (const auto &info : servers_info) {
+      new (dest) YBCAUHDescriptor {
+        .metadata = {
+          .top_level_request_id = YBCPAllocStdVectorUint64(info.metadata.top_level_request_id),
+          .client_node_host = info.metadata.client_node_host,
+          .client_node_port = static_cast<uint16_t>(info.metadata.client_node_port),
+          .top_level_node_id = YBCPAllocStdVectorUint64(info.metadata.top_level_node_id),
+          .current_request_id = info.metadata.current_request_id,
+          .query_id = info.metadata.query_id,
+        },
+        .wait_status_code = info.wait_status_code,
+        .aux_info = {
+          .table_id = YBCPAllocStdString(info.aux_info.table_id),
+          .tablet_id = YBCPAllocStdString(info.aux_info.tablet_id),
+          .method = YBCPAllocStdString(info.aux_info.method),
+        },
+        .wait_status_code_as_string = YBCPAllocStdString(info.wait_status_code_as_string),
+      };
+      ++dest;
+    }
+  }
+  return YBCStatusOK();
+}
+
+YBCStatus YBCSetTopLevelNodeId() {
+  return ToYBCStatus(pgapi->SetTopLevelNodeId());
+}
+
+void YBCSetQueryId(int64_t query_id) {
+  pgapi->SetQueryId(query_id);
+}
+
+void YBCSetTopLevelRequestId() {
+  pgapi->SetTopLevelRequestId();
+}
+
 YBCStatus YBCIsObjectPartOfXRepl(YBCPgOid database_oid, YBCPgOid table_oid,
                                  bool* is_object_part_of_xrepl) {
   auto res = pgapi->IsObjectPartOfXRepl(PgObjectId(database_oid, table_oid));

@@ -100,6 +100,8 @@ class PgClient {
 
   Result<uint64_t> GetCatalogMasterVersion();
 
+  Result<std::vector<uint64_t>> GetTServerUUID();
+
   Status CreateSequencesDataTable();
 
   Result<client::YBTableName> DropTable(
@@ -174,6 +176,8 @@ class PgClient {
   Result<tserver::PgGetTserverCatalogVersionInfoResponsePB> GetTserverCatalogVersionInfo(
       bool size_only, uint32_t db_oid);
 
+  Result<client::RpcsInfo> ActiveUniverseHistory();
+  
   using ActiveTransactionCallback = LWFunction<Status(
       const tserver::PgGetActiveTransactionListResponsePB_EntryPB&, bool is_last)>;
   Status EnumerateActiveTransactions(

@@ -33,6 +33,7 @@
 #include "yb/util/lw_function.h"
 #include "yb/util/oid_generator.h"
 #include "yb/util/result.h"
+#include "yb/util/wait_state.h"
 
 #include "yb/yql/pggate/pg_client.h"
 #include "yb/yql/pggate/pg_doc_metrics.h"
@@ -353,6 +354,23 @@ class PgSession : public RefCountedThreadSafe<PgSession> {
 
   PgDocMetrics& metrics() { return metrics_; }
 
+  Status SetTopLevelNodeId();
+
+  void SetQueryId(int64_t query_id);
+
+  void SetTopLevelRequestId();
+
+  void SetWaitEventInfo(util::WaitStateCode wait_event) {
+    uint32_t enum_int = to_underlying(wait_event);
+    pg_callbacks_.SignalWaitStart(enum_int);
+  }
+
+  void UnsetWaitEventInfo() {
+    pg_callbacks_.SignalWaitEnd();
+  }
+
+  Result<client::RpcsInfo> ActiveUniverseHistory();
+  
   // Check whether the specified table has a CDC stream.
   Result<bool> IsObjectPartOfXRepl(const PgObjectId& table_id);
 
@@ -417,6 +435,8 @@ class PgSession : public RefCountedThreadSafe<PgSession> {
 
   const YBCPgCallbacks& pg_callbacks_;
   bool has_write_ops_in_ddl_mode_ = false;
+
+  util::AUHMetadata auh_metadata_;
 };
 
 }  // namespace yb::pggate
