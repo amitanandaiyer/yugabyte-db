@@ -354,6 +354,8 @@ class PosixEnv : public Env {
 
   unsigned int GetThreadPoolQueueLen(Priority pri = LOW) const override;
 
+  virtual std::vector<yb::util::WaitStateInfoPtr> GetThreadpoolWaitStates() override;
+
   Status GetTestDirectory(std::string* result) override {
     const char* env = getenv("TEST_TMPDIR");
     if (env && env[0] != '\0') {
@@ -788,6 +790,15 @@ int PosixEnv::UnSchedule(void* arg, Priority pri) {
 unsigned int PosixEnv::GetThreadPoolQueueLen(Priority pri) const {
   assert(pri >= Priority::LOW && pri <= Priority::HIGH);
   return thread_pools_[pri].GetQueueLen();
+}
+
+std::vector<yb::util::WaitStateInfoPtr> PosixEnv::GetThreadpoolWaitStates() {
+  std::vector<yb::util::WaitStateInfoPtr> res;
+  auto low_priority_wait_events = thread_pools_[Priority::LOW].GetThreadpoolWaitStates();
+  auto high_priority_wait_events = thread_pools_[Priority::HIGH].GetThreadpoolWaitStates();
+  res.insert(res.end(), low_priority_wait_events.begin(), low_priority_wait_events.end());
+  res.insert(res.end(), high_priority_wait_events.begin(), high_priority_wait_events.end());
+  return res;
 }
 
 struct StartThreadState {
