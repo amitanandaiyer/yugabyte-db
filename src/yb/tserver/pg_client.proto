@@ -462,6 +462,7 @@ message PgPerformOptionsPB {
   CachingInfoPB caching_info = 17;
   bool read_from_followers = 18;
   bool trace_requested = 19;
+  AUHMetadataPB auh_metadata = 20;
 }
 
 message PgPerformRequestPB {
