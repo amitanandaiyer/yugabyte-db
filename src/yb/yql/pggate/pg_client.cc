@@ -745,6 +745,24 @@ class PgClient::Impl {
     return resp;
   }
 
+  Result<client::RpcsInfo> ActiveUniverseHistory() {
+    tserver::PgActiveUniverseHistoryRequestPB req;
+    tserver::PgActiveUniverseHistoryResponsePB resp;
+    RETURN_NOT_OK(proxy_->ActiveUniverseHistory(req, &resp, PrepareController()));
+    client::RpcsInfo result;
+    result.reserve(resp.tserver_wait_states_size() + resp.cql_wait_states_size() + resp.bg_wait_states_size());
+    for (const auto& wait_state : resp.tserver_wait_states()) {
+      result.push_back(client::YBActiveUniverseHistoryInfo::FromPB(wait_state));
+    }
+    for (const auto& wait_state : resp.cql_wait_states()) {
+      result.push_back(client::YBActiveUniverseHistoryInfo::FromPB(wait_state));
+    }
+    for (const auto& wait_state : resp.bg_wait_states()) {
+      result.push_back(client::YBActiveUniverseHistoryInfo::FromPB(wait_state));
+    }
+    return result;
+  }
+
   #define YB_PG_CLIENT_SIMPLE_METHOD_IMPL(r, data, method) \
   Status method( \
       tserver::BOOST_PP_CAT(BOOST_PP_CAT(Pg, method), RequestPB)* req, \
@@ -997,6 +1015,10 @@ Result<bool> PgClient::IsObjectPartOfXRepl(const PgObjectId& table_id) {
 Result<tserver::PgGetTserverCatalogVersionInfoResponsePB> PgClient::GetTserverCatalogVersionInfo(
     bool size_only, uint32_t db_oid) {
   return impl_->GetTserverCatalogVersionInfo(size_only, db_oid);
+}
+
+Result<client::RpcsInfo> PgClient::ActiveUniverseHistory() {
+  return impl_->ActiveUniverseHistory();
 }
 
 Status PgClient::EnumerateActiveTransactions(

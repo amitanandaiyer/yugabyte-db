@@ -41,6 +41,7 @@
 #include "yb/rpc/rpc_controller.h"
 #include "yb/rpc/scheduler.h"
 #include "yb/rpc/tasks_pool.h"
+#include "yb/rpc/rpc_introspection.pb.h"
 
 #include "yb/tserver/pg_client_session.h"
 #include "yb/tserver/pg_create_table.h"
@@ -122,6 +123,7 @@ class LockablePgClientSession : public PgClientSession {
         latch = ProcessSharedRequest(size, &exchange_->exchange());
       }
       if (latch) {
+        SCOPED_WAIT_STATUS(util::WaitStateCode::PgClientSessionStartExchange);
         latch->Wait();
       }
     });
@@ -357,6 +359,16 @@ class PgClientServiceImpl::Impl {
     uint64_t version;
     RETURN_NOT_OK(client().GetYsqlCatalogMasterVersion(&version));
     resp->set_version(version);
+    return Status::OK();
+  }
+
+  Status GetTServerUUID(
+      const PgGetTServerUUIDRequestPB& req,
+      PgGetTServerUUIDResponsePB* resp,
+      rpc::RpcContext* context) {
+    auto top_level_node_id = VERIFY_RESULT(client().GetTServerUUID());
+    resp->add_top_level_node_id(top_level_node_id[0]);
+    resp->add_top_level_node_id(top_level_node_id[1]);
     return Status::OK();
   }
 
@@ -812,6 +824,59 @@ class PgClientServiceImpl::Impl {
     } else {
       resp->set_is_pitr_active(*res);
     }
+    return Status::OK();
+  }
+
+  void GetRPCsWaitStates(
+      tserver::PgActiveUniverseHistoryResponsePB* resp, yb::util::MessengerType messenger_type) {
+    // SCOPED_WAIT_STATUS(util::WaitStateCode::ActiveOnCPU);
+    rpc::DumpRunningRpcsRequestPB dump_req;
+    rpc::DumpRunningRpcsResponsePB dump_resp;
+
+    dump_req.set_include_traces(false);
+    dump_req.set_get_wait_state(true);
+    dump_req.set_dump_timed_out(false);
+
+    auto messenger = tablet_server_.GetMessenger(messenger_type);
+    if (!messenger) {
+      LOG(ERROR) << __func__ << " got no messenger for type " << util::ToString(messenger_type);
+      return;
+    }
+
+    WARN_NOT_OK(messenger->DumpRunningRpcs(dump_req, &dump_resp), "DumpRunningRpcs failed");
+    
+    for (auto conns : dump_resp.inbound_connections()) {
+      for (auto call : conns.calls_in_flight()) {
+        if (!call.has_wait_state() || (call.wait_state().has_aux_info()
+            && call.wait_state().aux_info().has_method()
+            && call.wait_state().aux_info().method() == "ActiveUniverseHistory"))
+          continue;
+        if (messenger_type == util::MessengerType::kTserver) {
+          resp->add_tserver_wait_states()->CopyFrom(call.wait_state());
+        } else {
+          resp->add_cql_wait_states()->CopyFrom(call.wait_state());
+        }
+      }
+    }
+    VLOG(2) << __PRETTY_FUNCTION__ << " TServer wait-states " << yb::ToString(resp->tserver_wait_states());
+    VLOG(2) << __PRETTY_FUNCTION__ << " CQL wait-states " << yb::ToString(resp->cql_wait_states());
+  }
+
+  Status ActiveUniverseHistory(
+      const PgActiveUniverseHistoryRequestPB& req, PgActiveUniverseHistoryResponsePB* resp,
+      rpc::RpcContext* context) {
+    GetRPCsWaitStates(resp, util::MessengerType::kTserver);
+    GetRPCsWaitStates(resp, util::MessengerType::kCQLServer);
+
+    auto bg_wait_states = tablet_server_.GetThreadpoolWaitStates();
+    auto top_level_node_id = VERIFY_RESULT(client().GetTServerUUID());
+
+    for (auto wait_state : bg_wait_states) {
+      wait_state->set_top_level_node_id(top_level_node_id);
+      wait_state->set_client_node_ip("255.255.255.255:65535");
+      wait_state->ToPB(resp->add_bg_wait_states());
+    }
+
     return Status::OK();
   }
 
