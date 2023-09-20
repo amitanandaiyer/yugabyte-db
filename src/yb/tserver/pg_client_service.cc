@@ -829,37 +829,6 @@ class PgClientServiceImpl::Impl {
 
   void GetRPCsWaitStates(
       tserver::PgActiveUniverseHistoryResponsePB* resp, yb::util::MessengerType messenger_type) {
-    // SCOPED_WAIT_STATUS(util::WaitStateCode::ActiveOnCPU);
-    rpc::DumpRunningRpcsRequestPB dump_req;
-    rpc::DumpRunningRpcsResponsePB dump_resp;
-
-    dump_req.set_include_traces(false);
-    dump_req.set_get_wait_state(true);
-    dump_req.set_dump_timed_out(false);
-
-    auto messenger = tablet_server_.GetMessenger(messenger_type);
-    if (!messenger) {
-      LOG(ERROR) << __func__ << " got no messenger for type " << util::ToString(messenger_type);
-      return;
-    }
-
-    WARN_NOT_OK(messenger->DumpRunningRpcs(dump_req, &dump_resp), "DumpRunningRpcs failed");
-    
-    for (auto conns : dump_resp.inbound_connections()) {
-      for (auto call : conns.calls_in_flight()) {
-        if (!call.has_wait_state() || (call.wait_state().has_aux_info()
-            && call.wait_state().aux_info().has_method()
-            && call.wait_state().aux_info().method() == "ActiveUniverseHistory"))
-          continue;
-        if (messenger_type == util::MessengerType::kTserver) {
-          resp->add_tserver_wait_states()->CopyFrom(call.wait_state());
-        } else {
-          resp->add_cql_wait_states()->CopyFrom(call.wait_state());
-        }
-      }
-    }
-    VLOG(2) << __PRETTY_FUNCTION__ << " TServer wait-states " << yb::ToString(resp->tserver_wait_states());
-    VLOG(2) << __PRETTY_FUNCTION__ << " CQL wait-states " << yb::ToString(resp->cql_wait_states());
   }
 
   Status ActiveUniverseHistory(
