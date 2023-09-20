@@ -1267,5 +1267,20 @@ void TabletServer::SetXClusterDDLOnlyMode(bool is_xcluster_read_only_mode) {
   xcluster_read_only_mode_.store(is_xcluster_read_only_mode, std::memory_order_release);
 }
 
+void TabletServer::SetCQLServerMessenger(CQLServerMessenger messenger) {
+  cql_server_messenger_ = messenger;
+}
+
+rpc::Messenger* TabletServer::GetMessenger(util::MessengerType messenger_type) const {
+  switch (messenger_type) {
+    case util::MessengerType::kTserver:
+      return messenger();
+    case util::MessengerType::kCQLServer:
+      return (cql_server_messenger_ ? cql_server_messenger_() : nullptr);
+    default:
+      LOG(FATAL) << "AUH asking for invalid messenger";
+  }
+}
+
 }  // namespace tserver
 }  // namespace yb

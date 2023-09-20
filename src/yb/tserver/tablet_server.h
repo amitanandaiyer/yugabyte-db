@@ -290,9 +290,15 @@ class TabletServer : public DbServerBase, public TabletServerIf {
 
   void SetXClusterDDLOnlyMode(bool is_xcluster_read_only_mode);
 
+  std::vector<yb::util::WaitStateInfoPtr> GetThreadpoolWaitStates() const override;
+
   std::optional<uint64_t> GetCatalogVersionsFingerprint() const {
     return catalog_versions_fingerprint_.load(std::memory_order_acquire);
   }
+
+  void SetCQLServerMessenger(CQLServerMessenger messenger) override;
+
+  rpc::Messenger* GetMessenger(util::MessengerType messenger_type) const override;
 
  protected:
   virtual Status RegisterServices();
@@ -416,6 +422,8 @@ class TabletServer : public DbServerBase, public TabletServerIf {
 
   std::unique_ptr<rocksdb::Env> rocksdb_env_;
   std::unique_ptr<encryption::UniverseKeyManager> universe_key_manager_;
+
+  CQLServerMessenger cql_server_messenger_;
 
   DISALLOW_COPY_AND_ASSIGN(TabletServer);
 };
