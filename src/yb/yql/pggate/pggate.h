@@ -686,6 +686,16 @@ class PgApiImpl {
 
   MemTracker &GetRootMemTracker() { return *MemTracker::GetRootTracker(); }
 
+  //------------------------------------------------------------------------------------------------
+  // Active Universe History.
+  Result<client::RpcsInfo> ActiveUniverseHistory();
+
+  Status SetTopLevelNodeId();
+
+  void SetQueryId(int64_t query_id);
+
+  void SetTopLevelRequestId();
+  
   // Using this function instead of GetRootMemTracker allows us to avoid copying a shared_pointer
   int64_t GetRootMemTrackerConsumption() { return MemTracker::GetRootTrackerConsumption(); }
 

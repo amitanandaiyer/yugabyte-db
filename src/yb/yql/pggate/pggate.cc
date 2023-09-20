@@ -2090,6 +2090,22 @@ Result<bool> PgApiImpl::CheckIfPitrActive() {
   return pg_session_->CheckIfPitrActive();
 }
 
+Result<client::RpcsInfo> PgApiImpl::ActiveUniverseHistory() {
+  return pg_session_->ActiveUniverseHistory();
+}
+
+Status PgApiImpl::SetTopLevelNodeId() {
+  return pg_session_->SetTopLevelNodeId();
+}
+
+void PgApiImpl::SetQueryId(int64_t query_id) {
+  pg_session_->SetQueryId(query_id);
+}
+
+void PgApiImpl::SetTopLevelRequestId() {
+  pg_session_->SetTopLevelRequestId();
+}
+
 Result<bool> PgApiImpl::IsObjectPartOfXRepl(const PgObjectId& table_id) {
   return pg_session_->IsObjectPartOfXRepl(table_id);
 }

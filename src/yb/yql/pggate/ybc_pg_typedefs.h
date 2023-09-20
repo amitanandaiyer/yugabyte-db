@@ -359,6 +359,10 @@ typedef struct PgCallbacks {
   YBCPgMemctx (*GetCurrentYbMemctx)();
   const char* (*GetDebugQueryString)();
   void (*WriteExecOutParam)(PgExecOutParam *, const YbcPgExecOutParamValue *);
+  void (*SignalWaitStart)(uint32_t);
+  void (*SignalWaitEnd)();
+  void (*ProcSetTopLevelNodeId)(const uint64_t*);
+  void (*ProcSetTopLevelRequestId)(const uint64_t*);
   /* yb_type.c */
   int64_t (*UnixEpochToPostgresEpoch)(int64_t);
   void (*ConstructArrayDatum)(YBCPgOid oid, const char **, const int, char **, size_t *);
@@ -416,6 +420,28 @@ typedef struct PgServerDescriptor {
   uint16_t pg_port;
   const char *uuid;
 } YBCServerDescriptor;
+
+typedef struct AUHMetadataDescriptor {
+  const uint64_t* top_level_request_id;
+  uint32_t client_node_host;
+  uint16_t client_node_port;
+  const uint64_t* top_level_node_id;
+  int64_t current_request_id;
+  int64_t query_id;
+} YBCAUHMetadataDescriptor;
+
+typedef struct AUHAuxDescriptor {
+  const char* table_id;
+  const char* tablet_id;
+  const char* method;
+} YBCAUHAuxDescriptor;
+
+typedef struct AUHDescriptor {
+  YBCAUHMetadataDescriptor metadata;
+  uint64_t wait_status_code;
+  YBCAUHAuxDescriptor aux_info;
+  const char* wait_status_code_as_string;
+} YBCAUHDescriptor;
 
 typedef struct PgColumnInfo {
   bool is_primary;
