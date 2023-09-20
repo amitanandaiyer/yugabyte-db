@@ -22,6 +22,8 @@
 
 #include "yb/yql/pggate/pg_client.h"
 
+#include "yb/util/wait_state.h"
+
 namespace yb {
 namespace pggate {
 
@@ -35,7 +37,9 @@ class PerformFuture {
   };
 
   PerformFuture() = default;
-  PerformFuture(std::future<PerformResult> future, PgSession* session, PgObjectIds&& relations);
+  PerformFuture(
+      std::future<PerformResult> future, PgSession* session, PgObjectIds&& relations,
+      util::WaitStateCode wait_event);
   PerformFuture(PerformFuture&&) = default;
   PerformFuture& operator=(PerformFuture&&) = default;
   ~PerformFuture();
@@ -44,10 +48,13 @@ class PerformFuture {
   bool Ready() const;
   Result<Data> Get();
 
+  PgSession* session();
+
  private:
   std::future<PerformResult> future_;
   PgSession* session_ = nullptr;
   PgObjectIds relations_;
+  util::WaitStateCode wait_event_;
 };
 
 } // namespace pggate

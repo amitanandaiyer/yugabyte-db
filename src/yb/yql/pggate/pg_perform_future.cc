@@ -41,8 +41,12 @@ Status PatchStatus(const Status& status, const PgObjectIds& relations) {
 } // namespace
 
 PerformFuture::PerformFuture(
-    std::future<PerformResult> future, PgSession* session, PgObjectIds&& relations)
-    : future_(std::move(future)), session_(session), relations_(std::move(relations)) {
+    std::future<PerformResult> future, PgSession* session, PgObjectIds&& relations,
+    util::WaitStateCode wait_event)
+    : future_(std::move(future)),
+      session_(session),
+      relations_(std::move(relations)),
+      wait_event_(wait_event) {
 }
 
 PerformFuture::~PerformFuture() {
@@ -69,9 +73,14 @@ Result<PerformFuture::Data> PerformFuture::Get() {
   auto result = future.get();
   RETURN_NOT_OK(PatchStatus(result.status, relations_));
   session_->TrySetCatalogReadPoint(result.catalog_read_time);
+
   return Data{
       .response = std::move(result.response),
       .used_in_txn_limit = result.used_in_txn_limit};
+}
+
+PgSession* PerformFuture::session() {
+  return session_;
 }
 
 } // namespace pggate

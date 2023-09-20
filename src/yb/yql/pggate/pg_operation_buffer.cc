@@ -42,6 +42,8 @@
 #include "yb/yql/pggate/pg_op.h"
 #include "yb/yql/pggate/pg_tabledesc.h"
 
+#include "yb/yql/pggate/pg_session.h"
+
 namespace yb {
 namespace pggate {
 
@@ -176,11 +178,13 @@ void BufferableOperations::Add(PgsqlOpPtr op, const PgObjectId& relation) {
 void BufferableOperations::Swap(BufferableOperations* rhs) {
   operations.swap(rhs->operations);
   relations.swap(rhs->relations);
+  rhs->wait_event_ = wait_event_;
 }
 
 void BufferableOperations::Clear() {
   operations.clear();
   relations.clear();
+  wait_event_ = util::WaitStateCode::Unused;
 }
 
 void BufferableOperations::Reserve(size_t capacity) {
@@ -321,6 +325,9 @@ class PgOperationBuffer::Impl {
       auto result = VERIFY_RESULT(metrics_.CallWithDuration(
           [&future = in_flight_ops_.front().future] { return future.Get(); }, &duration));
       metrics_.FlushRequest(duration);
+      if (in_flight_ops_.size() == 1) {
+        in_flight_ops_.front().future.session()->UnsetWaitEventInfo();
+      }
       in_flight_ops_.pop_front();
     }
     return Status::OK();
