@@ -377,6 +377,8 @@ class TSTabletManager : public tserver::TabletPeerLookupIf, public tablet::Table
   // should_wait determines whether this function is asynchronous or not.
   Status TriggerAdminCompaction(const TabletPtrs& tablets, bool should_wait);
 
+  std::vector<yb::util::WaitStateInfoPtr> GetThreadpoolWaitStates() const;
+  
   // Create Metadata cache atomically and return the metadata cache object.
   client::YBMetaDataCache* CreateYBMetaDataCache();
 

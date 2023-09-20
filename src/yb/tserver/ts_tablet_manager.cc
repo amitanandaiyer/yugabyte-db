@@ -116,6 +116,7 @@
 #include "yb/util/status_log.h"
 #include "yb/util/stopwatch.h"
 #include "yb/util/trace.h"
+#include "yb/util/wait_state.h"
 
 using namespace std::literals;
 using namespace std::placeholders;
@@ -3089,6 +3090,10 @@ Status ShutdownAndTombstoneTabletPeerNotOk(
   }
   tserver::LogAndTombstone(meta, msg, uuid, status, ts_tablet_manager);
   return status;
+}
+
+std::vector<yb::util::WaitStateInfoPtr> TSTabletManager::GetThreadpoolWaitStates() const {
+  return tablet_options_.rocksdb_env->GetThreadpoolWaitStates();
 }
 
 } // namespace tserver

@@ -1282,5 +1282,9 @@ rpc::Messenger* TabletServer::GetMessenger(util::MessengerType messenger_type) c
   }
 }
 
+std::vector<yb::util::WaitStateInfoPtr> TabletServer::GetThreadpoolWaitStates() const {
+  return tablet_manager_->GetThreadpoolWaitStates();
+}
+
 }  // namespace tserver
 }  // namespace yb
