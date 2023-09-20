@@ -837,6 +837,15 @@ class PgClientServiceImpl::Impl {
     GetRPCsWaitStates(resp, util::MessengerType::kTserver);
     GetRPCsWaitStates(resp, util::MessengerType::kCQLServer);
 
+    auto bg_wait_states = tablet_server_.GetThreadpoolWaitStates();
+    auto top_level_node_id = VERIFY_RESULT(client().GetTServerUUID());
+
+    for (auto wait_state : bg_wait_states) {
+      wait_state->set_top_level_node_id(top_level_node_id);
+      wait_state->set_client_node_ip("255.255.255.255:65535");
+      wait_state->ToPB(resp->add_bg_wait_states());
+    }
+
     return Status::OK();
   }
 
