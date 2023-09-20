@@ -77,9 +77,6 @@ void WaitStateInfo::set_state(WaitStateCode c) {
 }
 
 WaitStateCode WaitStateInfo::get_state() const {
-  if (GetAtomicFlag(&FLAGS_freeze_wait_states)) {
-    return get_frozen_state();
-  }
   return code_;
 }
 
