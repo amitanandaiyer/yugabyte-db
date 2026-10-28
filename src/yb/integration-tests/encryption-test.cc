@@ -18,6 +18,7 @@
 #include "yb/client/yb_table_name.h"
 
 #include "yb/encryption/encrypted_file_factory.h"
+#include "yb/encryption/encryption_util.h"
 #include "yb/encryption/header_manager.h"
 #include "yb/encryption/header_manager_impl.h"
 #include "yb/encryption/universe_key_manager.h"
@@ -117,9 +118,9 @@ class EncryptionTest : public YBTableTestBase, public testing::WithParamInterfac
     }
   }
 
-  void AddUniverseKeys() {
+  void AddUniverseKeys(size_t key_bytes = encryption::DefaultUniverseKeySize()) {
     current_key_id_ = RandomHumanReadableString(16);
-    auto bytes = RandomBytes(32);
+    auto bytes = RandomBytes(key_bytes);
     ASSERT_OK(yb_admin_client_->AddUniverseKeyToAllMasters(
         current_key_id_, std::string(bytes.begin(), bytes.end())));
     current_key_ = bytes;
