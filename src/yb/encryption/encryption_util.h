@@ -44,6 +44,10 @@ struct FileEncryptionStatus {
 struct EncryptionParams {
   static constexpr uint32_t kBlockSize = 16;
   static constexpr uint32_t kMaxKeySize = 32;
+  static constexpr uint32_t kAes128KeySize = 16;
+  static constexpr uint32_t kAes256KeySize = 32;
+  // A universe key blob is the nonce and initial counter followed by the AES key; see FromSlice.
+  static constexpr uint32_t kUniverseKeyPrefixSize = kBlockSize;
 
   uint8_t key[kMaxKeySize];
   // Nonce of 12 bytes for encryption.
@@ -64,7 +68,8 @@ struct EncryptionParams {
   // Given a slice, convert contents to encryption params. Used to read latest universe key.
   static Result<std::unique_ptr<EncryptionParams>> FromSlice(const Slice& s);
 
-  static std::unique_ptr<EncryptionParams> NewEncryptionParams();
+  // Random key, nonce and counter. key_size must be 16, 24 or 32.
+  static std::unique_ptr<EncryptionParams> NewEncryptionParams(uint32_t key_size);
 
   static Status IsValidKeySize(size_t size);
 
@@ -72,6 +77,10 @@ struct EncryptionParams {
 };
 
 typedef std::unique_ptr<EncryptionParams> EncryptionParamsPtr;
+
+// Size of a universe key blob whose AES key is as long as the data keys of a new universe
+// (encryption_new_universe_data_key_size_bytes).
+uint32_t DefaultUniverseKeySize();
 
 // Since this will typically be passed in by an external user (YW or yb-admin), UniverseKeyId
 // will be a generic string for ease of use.
@@ -138,7 +147,8 @@ Status CreateEncryptionInfoForWrite(HeaderManager* header_manager,
                                     Writable* underlying_w,
                                     std::unique_ptr<BlockAccessCipherStream>* stream,
                                     uint32_t* header_size) {
-  auto encryption_params = EncryptionParams::NewEncryptionParams();
+  auto encryption_params =
+      EncryptionParams::NewEncryptionParams(VERIFY_RESULT(header_manager->GetDataKeySize()));
   std::string header = VERIFY_RESULT(
       header_manager->SerializeEncryptionParams(*encryption_params.get()));
   RETURN_NOT_OK(underlying_w->Append(header));

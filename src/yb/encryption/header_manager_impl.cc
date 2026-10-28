@@ -138,6 +138,10 @@ class HeaderManagerImpl : public HeaderManager {
     return universe_key_manager_->IsEncryptionEnabled();
   }
 
+  Result<uint32_t> GetDataKeySize() override {
+    return universe_key_manager_->GetDataKeySize();
+  }
+
  private:
   Status CheckSliceCanBeDecoded(const Slice& s, uint32_t expected_length, const string& field) {
     if (s.size() < expected_length) {

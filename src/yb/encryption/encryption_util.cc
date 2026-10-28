@@ -29,10 +29,12 @@
 #include "yb/encryption/header_manager.h"
 
 #include "yb/util/atomic.h"
+#include "yb/util/flag_validators.h"
 #include "yb/util/flags.h"
 #include "yb/util/logging.h"
 #include "yb/util/random_util.h"
 #include "yb/util/status_format.h"
+#include "yb/util/status_log.h"
 
 DEFINE_UNKNOWN_int64(encryption_counter_min, 0,
              "Minimum value (inclusive) for the randomly generated 32-bit encryption counter at "
@@ -49,6 +51,23 @@ DEFINE_UNKNOWN_int64(encryption_counter_max, 0x7fffffffLL,
 TAG_FLAG(encryption_counter_max, advanced);
 TAG_FLAG(encryption_counter_max, hidden);
 
+// Readers take the key size from each file's header, so files written with either size stay
+// readable by every release that supports encryption at rest.
+DEFINE_RUNTIME_uint32(encryption_data_key_size_bytes, 0,
+    "Overrides the data-key size recorded in the universe key registry for files this tserver "
+    "writes: 16 for AES-128, 32 for AES-256. 0 uses the registry. For diagnostics only.");
+DEFINE_validator(encryption_data_key_size_bytes, FLAG_IN_SET_VALIDATOR(0, 16, 32));
+TAG_FLAG(encryption_data_key_size_bytes, advanced);
+TAG_FLAG(encryption_data_key_size_bytes, hidden);
+
+DEFINE_RUNTIME_uint32(encryption_new_universe_data_key_size_bytes, 32,
+    "Data-key size recorded in the universe key registry when encryption at rest is enabled for "
+    "the first time: 32 for AES-256, 16 for AES-128. Universes that already enabled encryption "
+    "at rest keep their recorded size.");
+DEFINE_validator(encryption_new_universe_data_key_size_bytes, FLAG_IN_SET_VALIDATOR(16, 32));
+TAG_FLAG(encryption_new_universe_data_key_size_bytes, advanced);
+TAG_FLAG(encryption_new_universe_data_key_size_bytes, hidden);
+
 DEFINE_test_flag(bool, encryption_use_openssl_compatible_counter_overflow, true,
                  "Overflow into the rest of the initialization vector when computing counter"
                  "increment for newly created keys.");
@@ -61,8 +80,6 @@ namespace {
 std::vector<std::unique_ptr<std::mutex>> crypto_mutexes;
 
 }  // anonymous namespace
-
-constexpr uint32_t kDefaultKeySize = 16;
 
 void EncryptionParams::ToEncryptionParamsPB(EncryptionParamsPB* encryption_header) const {
   encryption_header->set_data_key(key, key_size);
@@ -98,9 +115,10 @@ Result<EncryptionParamsPtr> EncryptionParams::FromSlice(const Slice& s) {
   return params;
 }
 
-EncryptionParamsPtr EncryptionParams::NewEncryptionParams() {
+EncryptionParamsPtr EncryptionParams::NewEncryptionParams(uint32_t key_size) {
+  CHECK_OK(IsValidKeySize(key_size));
   auto encryption_params = std::make_unique<EncryptionParams>();
-  RAND_bytes(encryption_params->key, kDefaultKeySize);
+  RAND_bytes(encryption_params->key, key_size);
   RAND_bytes(encryption_params->nonce, kBlockSize - 4);
   RAND_bytes(boost::reinterpret_pointer_cast<uint8_t>(&encryption_params->counter), 4);
 
@@ -115,10 +133,15 @@ EncryptionParamsPtr EncryptionParams::NewEncryptionParams() {
         << "[" << ctr_min << ", " << ctr_max << "] specified by --encryption_counter_{min,max}, "
         << "falling back to using the full unsigned 32-bit integer range.";
   }
-  encryption_params->key_size = kDefaultKeySize;
+  encryption_params->key_size = key_size;
   encryption_params->openssl_compatible_counter_overflow =
       FLAGS_TEST_encryption_use_openssl_compatible_counter_overflow;
   return encryption_params;
+}
+
+uint32_t DefaultUniverseKeySize() {
+  return EncryptionParams::kUniverseKeyPrefixSize +
+         FLAGS_encryption_new_universe_data_key_size_bytes;
 }
 
 Status EncryptionParams::IsValidKeySize(size_t size) {

@@ -13,9 +13,12 @@
 
 #include "yb/encryption/universe_key_manager.h"
 
+#include "yb/util/flags.h"
 #include "yb/util/status_format.h"
 
 #include "yb/util/debug-util.h"
+
+DECLARE_uint32(encryption_data_key_size_bytes);
 
 namespace yb {
 namespace encryption {
@@ -67,6 +70,16 @@ Result<UniverseKeyParams> UniverseKeyManager::GetLatestUniverseParams() {
   universe_key_params.version_id = it->first;
   universe_key_params.params = VERIFY_RESULT(EncryptionParams::FromEncryptionParamsPB(it->second));
   return universe_key_params;
+}
+
+Result<uint32_t> UniverseKeyManager::GetDataKeySize() {
+  if (auto override_size = FLAGS_encryption_data_key_size_bytes; override_size != 0) {
+    return override_size;
+  }
+  std::lock_guard l(mutex_);
+  SCHECK(received_universe_key_registry_, IllegalState, "Universe key registry not received");
+  auto size = universe_key_registry_.data_key_size_bytes();
+  return size != 0 ? size : EncryptionParams::kAes128KeySize;
 }
 
 Result<bool> UniverseKeyManager::IsEncryptionEnabled() {

@@ -50,6 +50,9 @@ class HeaderManager {
   virtual Result<bool> IsEncryptionEnabled() = 0;
 
   virtual Result<std::string> GetLatestUniverseKeyId() = 0;
+
+  // Size of data keys for new files.
+  virtual Result<uint32_t> GetDataKeySize() = 0;
 };
 
 } // namespace encryption

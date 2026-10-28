@@ -24,8 +24,12 @@
 
 #include "yb/tserver/universe_key_test_util.h"
 
+#include "yb/util/flags.h"
+#include "yb/util/random_util.h"
 #include "yb/util/status_fwd.h"
 #include "yb/util/test_util.h"
+
+DECLARE_uint32(encryption_data_key_size_bytes);
 
 using std::string;
 
@@ -39,15 +43,37 @@ TEST_F(TestHeaderManagerImpl, FileOps) {
   auto universe_key_manger = GenerateTestUniverseKeyManager();
   auto header_manager =
       DefaultHeaderManager(universe_key_manger.get());
-  auto params = encryption::EncryptionParams::NewEncryptionParams();
-  string header = ASSERT_RESULT(header_manager->SerializeEncryptionParams(*params.get()));
-  auto start_idx = header_manager->GetEncryptionMetadataStartIndex();
-  auto status = ASSERT_RESULT(header_manager->GetFileEncryptionStatusFromPrefix(
-      Slice(header.c_str(), start_idx)));
-  ASSERT_TRUE(status.is_encrypted);
-  Slice s = Slice(header.c_str() + start_idx, status.header_size);
-  auto new_params = ASSERT_RESULT(header_manager->DecodeEncryptionParamsFromEncryptionMetadata(s));
-  ASSERT_TRUE(params->Equals(*new_params.get()));
+  using encryption::EncryptionParams;
+  for (auto key_size : {EncryptionParams::kAes128KeySize, EncryptionParams::kAes256KeySize}) {
+    auto params = EncryptionParams::NewEncryptionParams(key_size);
+    string header = ASSERT_RESULT(header_manager->SerializeEncryptionParams(*params.get()));
+    auto start_idx = header_manager->GetEncryptionMetadataStartIndex();
+    auto status = ASSERT_RESULT(header_manager->GetFileEncryptionStatusFromPrefix(
+        Slice(header.c_str(), start_idx)));
+    ASSERT_TRUE(status.is_encrypted);
+    Slice s = Slice(header.c_str() + start_idx, status.header_size);
+    auto new_params =
+        ASSERT_RESULT(header_manager->DecodeEncryptionParamsFromEncryptionMetadata(s));
+    ASSERT_EQ(new_params->key_size, key_size);
+    ASSERT_TRUE(params->Equals(*new_params.get()));
+  }
+}
+
+TEST_F(TestHeaderManagerImpl, DataKeySize) {
+  using encryption::EncryptionParams;
+  // A registry without a recorded size predates the field, so its universe stays on AES-128.
+  auto key = RandomBytes(encryption::DefaultUniverseKeySize());
+  auto legacy_manager = ASSERT_RESULT(encryption::UniverseKeyManager::FromKey(
+      "legacy", Slice(key.data(), key.size())));
+  ASSERT_EQ(ASSERT_RESULT(legacy_manager->GetDataKeySize()), EncryptionParams::kAes128KeySize);
+
+  auto new_manager = GenerateTestUniverseKeyManager();
+  ASSERT_EQ(ASSERT_RESULT(new_manager->GetDataKeySize()), EncryptionParams::kAes256KeySize);
+
+  ANNOTATE_UNPROTECTED_WRITE(FLAGS_encryption_data_key_size_bytes) =
+      EncryptionParams::kAes256KeySize;
+  ASSERT_EQ(ASSERT_RESULT(legacy_manager->GetDataKeySize()), EncryptionParams::kAes256KeySize);
+  ANNOTATE_UNPROTECTED_WRITE(FLAGS_encryption_data_key_size_bytes) = 0;
 }
 
 } // namespace yb

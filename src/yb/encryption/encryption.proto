@@ -34,4 +34,8 @@ message UniverseKeyRegistryPB {
   bool encryption_enabled = 1;
   map<string, EncryptionParamsPB> universe_keys = 2;
   string latest_version_id = 3;
+  // Size of data keys for newly written files. Set when encryption at rest is first enabled, and
+  // changed only by an operator. 0 means 16 (AES-128): the universe enabled encryption at rest
+  // before this field existed, and stays on AES-128 until it is migrated.
+  uint32 data_key_size_bytes = 4;
 }

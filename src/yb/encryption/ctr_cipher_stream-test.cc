@@ -45,7 +45,7 @@ class TestCipherStream : public YBTest {
     // Create a cipher stream on an iv about to overflow.
     ANNOTATE_UNPROTECTED_WRITE(FLAGS_TEST_encryption_use_openssl_compatible_counter_overflow) =
         use_openssl_compatible_counter_overflow;
-    auto params = EncryptionParams::NewEncryptionParams();
+    auto params = EncryptionParams::NewEncryptionParams(EncryptionParams::kAes128KeySize);
     // Initialize the nonce to be about to overflow for each position.
     uint8_t nonce[12];
     for (size_t i = 0; i < sizeof(nonce); i++) {
@@ -85,7 +85,7 @@ TEST_F(TestCipherStream, ConcurrentEncryption) {
   constexpr int kNumRuns = 10000;
   auto plaintext_bytes = RandomBytes(kBufSize);
   uint8_t encrypted_bytes[kBufSize];
-  auto encryption_params = EncryptionParams::NewEncryptionParams();
+  auto encryption_params = EncryptionParams::NewEncryptionParams(EncryptionParams::kAes128KeySize);
   auto cipher_stream  = ASSERT_RESULT(BlockAccessCipherStream::FromEncryptionParams(
       std::move(encryption_params)));
   ASSERT_OK(cipher_stream->Encrypt(0, Slice(plaintext_bytes.data(), kBufSize), encrypted_bytes));
@@ -109,7 +109,7 @@ TEST_F(TestCipherStream, ConcurrentEncryption) {
     threads.emplace_back([&]() {
       for (int i = 0; i < kNumRuns; i++) {
         // Do this to trigger use of openssl RAND_bytes
-        EncryptionParams::NewEncryptionParams();
+        EncryptionParams::NewEncryptionParams(EncryptionParams::kAes128KeySize);
         ASSERT_NO_FATALS(f(true /* encrypt */));
       }
     });
@@ -119,7 +119,7 @@ TEST_F(TestCipherStream, ConcurrentEncryption) {
   for (int i = 0; i < 20; i++) {
     threads.emplace_back([&]() {
       for (int i = 0; i < kNumRuns; i++) {
-        EncryptionParams::NewEncryptionParams();
+        EncryptionParams::NewEncryptionParams(EncryptionParams::kAes128KeySize);
         ASSERT_NO_FATALS(f(false /* encrypt */));
       }
     });
@@ -137,6 +137,27 @@ TEST_F(TestCipherStream, Overflow) {
   ASSERT_NOK(s);
   ASSERT_EQ(s.CodeAsString(), "Corruption");
   ASSERT_STR_CONTAINS(s.message().ToBuffer(), "Corrupted bytes starting");
+}
+
+TEST_F(TestCipherStream, DataKeySizes) {
+  rpc::InitOpenSSL();
+
+  auto plaintext_bytes = RandomBytes(kDataSize);
+  for (auto key_size : {EncryptionParams::kAes128KeySize, EncryptionParams::kAes256KeySize}) {
+    auto params = EncryptionParams::NewEncryptionParams(key_size);
+    ASSERT_EQ(params->key_size, key_size);
+
+    auto cipher_stream = ASSERT_RESULT(BlockAccessCipherStream::FromEncryptionParams(
+        std::move(params)));
+    uint8_t encrypted_bytes[kDataSize];
+    ASSERT_OK(cipher_stream->Encrypt(
+        0, Slice(plaintext_bytes.data(), kDataSize), encrypted_bytes));
+    ASSERT_NE(Slice(encrypted_bytes, kDataSize), Slice(plaintext_bytes.data(), kDataSize));
+
+    uint8_t decrypted_bytes[kDataSize];
+    ASSERT_OK(cipher_stream->Decrypt(0, Slice(encrypted_bytes, kDataSize), decrypted_bytes));
+    ASSERT_EQ(Slice(decrypted_bytes, kDataSize), Slice(plaintext_bytes.data(), kDataSize));
+  }
 }
 
 } // namespace encryption

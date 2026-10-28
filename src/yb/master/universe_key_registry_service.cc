@@ -18,12 +18,15 @@
 
 #include "yb/master/catalog_entity_info.pb.h"
 
+#include "yb/util/flags.h"
 #include "yb/util/pb_util.h"
 #include "yb/util/random_util.h"
 
 #include "yb/gutil/endian.h"
 
 using std::string;
+
+DECLARE_uint32(encryption_new_universe_data_key_size_bytes);
 
 namespace yb {
 namespace master {
@@ -79,6 +82,13 @@ Status RotateUniverseKey(const Slice& old_universe_key,
     registry_for_flush = Slice(encoded);
   } else {
     LOG_IF(DFATAL, new_universe_key.empty());
+    // Only a universe that never had a universe key gets the new-universe data-key size; a
+    // universe that enabled encryption at rest before keeps its size until an operator changes it.
+    if (universe_key_registry.universe_keys().empty() &&
+        universe_key_registry.data_key_size_bytes() == 0) {
+      universe_key_registry.set_data_key_size_bytes(
+          FLAGS_encryption_new_universe_data_key_size_bytes);
+    }
     auto params = VERIFY_RESULT(encryption::EncryptionParams::FromSlice(new_universe_key));
     encryption::EncryptionParamsPB params_pb;
     params->ToEncryptionParamsPB(&params_pb);
