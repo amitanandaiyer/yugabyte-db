@@ -2005,6 +2005,21 @@ yb-admin \
 * *master-addresses*: Comma-separated list of YB-Master hosts and ports. Default is `localhost:7100`.
 * *key-id*: Universe-unique identifier (can be any string, such as a string of a UUID) that will be associated to the universe key contained in the contents of *key-path* as a byte[].
 
+#### set_encryption_data_key_size
+
+Switches newly written data files to 256-bit (AES-256) data keys. Existing files keep their keys until compaction rewrites them. Encryption at rest must be enabled.
+
+Clusters that enable encryption at rest for the first time already use 256-bit data keys. Use this command to [migrate a cluster](../../secure/encryption-at-rest/#migrate-an-existing-cluster-to-aes-256) that enabled encryption at rest earlier.
+
+**Syntax**
+
+```sh
+yb-admin \
+    --master_addresses <master-addresses> set_encryption_data_key_size 32
+```
+
+* *master-addresses*: Comma-separated list of YB-Master hosts and ports. Default is `localhost:7100`.
+
 #### disable_encryption_in_memory
 
 Disables the in-memory encryption at rest for newly-written data files.
