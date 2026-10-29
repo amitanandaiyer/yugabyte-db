@@ -2290,6 +2290,18 @@ Status rotate_universe_key_in_memory_action(
   return Status::OK();
 }
 
+const auto set_encryption_data_key_size_args = "<16|32>";
+Status set_encryption_data_key_size_action(
+    const ClusterAdminCli::CLIArguments& args, ClusterAdminClient* client) {
+  if (args.size() != 1) {
+    return ClusterAdminCli::kInvalidArguments;
+  }
+  const auto size = VERIFY_RESULT(CheckedStoInt<uint32_t>(args[0]));
+  RETURN_NOT_OK_PREPEND(
+      client->SetEncryptionDataKeySize(size), "Unable to set encryption data key size.");
+  return Status::OK();
+}
+
 const auto disable_encryption_in_memory_args = "";
 Status disable_encryption_in_memory_action(
     const ClusterAdminCli::CLIArguments& args, ClusterAdminClient* client) {
@@ -3593,6 +3605,7 @@ void ClusterAdminCli::RegisterCommandHandlers() {
   REGISTER_COMMAND(add_universe_key_to_all_masters);
   REGISTER_COMMAND(all_masters_have_universe_key_in_memory);
   REGISTER_COMMAND(rotate_universe_key_in_memory);
+  REGISTER_COMMAND(set_encryption_data_key_size);
   REGISTER_COMMAND(disable_encryption_in_memory);
   REGISTER_COMMAND(write_universe_key_to_file);
   REGISTER_COMMAND(are_nodes_safe_to_take_down);

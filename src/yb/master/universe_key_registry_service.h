@@ -33,5 +33,10 @@ Status RotateUniverseKey(const Slice& old_universe_key,
                          const std::string& new_key_version_id,
                          bool enable,
                          EncryptionInfoPB* encryption_info);
+
+// Change the data-key size recorded in the universe key registry. Encryption must be enabled and
+// universe_key must be the latest universe key, which the registry is encrypted with.
+Status SetDataKeySize(const Slice& universe_key, uint32_t data_key_size_bytes,
+                      EncryptionInfoPB* encryption_info);
 } // namespace master
 } // namespace yb

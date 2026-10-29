@@ -21,6 +21,7 @@
 #include "yb/util/flags.h"
 #include "yb/util/pb_util.h"
 #include "yb/util/random_util.h"
+#include "yb/util/status_format.h"
 
 #include "yb/gutil/endian.h"
 
@@ -105,6 +106,29 @@ Status RotateUniverseKey(const Slice& old_universe_key,
       registry_for_flush.data(), registry_for_flush.size());
   encryption_info->set_latest_version_id(new_key_version_id);
 
+  return Status::OK();
+}
+
+Status SetDataKeySize(const Slice& universe_key, uint32_t data_key_size_bytes,
+                      EncryptionInfoPB* encryption_info) {
+  SCHECK(data_key_size_bytes == encryption::EncryptionParams::kAes128KeySize ||
+             data_key_size_bytes == encryption::EncryptionParams::kAes256KeySize,
+         InvalidArgument, Format("Data key size must be $0 or $1 bytes, got $2",
+                                 encryption::EncryptionParams::kAes128KeySize,
+                                 encryption::EncryptionParams::kAes256KeySize,
+                                 data_key_size_bytes));
+  auto decrypted = VERIFY_RESULT(DecryptUniverseKeyRegistry(
+      encryption_info->universe_key_registry_encoded(), universe_key));
+  auto registry = VERIFY_RESULT(
+      pb_util::ParseFromSlice<encryption::UniverseKeyRegistryPB>(Slice(decrypted)));
+  LOG(INFO) << Format("Changing data key size from $0 to $1 bytes",
+                      registry.data_key_size_bytes(), data_key_size_bytes);
+  registry.set_data_key_size_bytes(data_key_size_bytes);
+
+  faststring encoded;
+  RETURN_NOT_OK(pb_util::SerializeToString(registry, &encoded));
+  auto encrypted = VERIFY_RESULT(EncryptUniverseKeyRegistry(Slice(encoded), universe_key));
+  encryption_info->set_universe_key_registry_encoded(encrypted.data(), encrypted.size());
   return Status::OK();
 }
 

@@ -1701,11 +1701,25 @@ Status CatalogManager::GetFullUniverseKeyRegistry(const GetFullUniverseKeyRegist
 
 Status CatalogManager::ChangeEncryptionInfo(const ChangeEncryptionInfoRequestPB* req,
                                             ChangeEncryptionInfoResponsePB* resp) {
+  return UpdateEncryptionInfo([this, req](EncryptionInfoPB* encryption_info) {
+    return encryption_manager_->ChangeEncryptionInfo(req, encryption_info);
+  });
+}
+
+Status CatalogManager::SetEncryptionDataKeySize(const SetEncryptionDataKeySizeRequestPB* req,
+                                                SetEncryptionDataKeySizeResponsePB* resp) {
+  return UpdateEncryptionInfo([this, req](EncryptionInfoPB* encryption_info) {
+    return encryption_manager_->SetDataKeySize(req, encryption_info);
+  });
+}
+
+Status CatalogManager::UpdateEncryptionInfo(
+    const std::function<Status(EncryptionInfoPB*)>& update) {
   auto cluster_config = ClusterConfig();
   auto l = cluster_config->LockForWrite();
   auto encryption_info = l.mutable_data()->pb.mutable_encryption_info();
 
-  RETURN_NOT_OK(encryption_manager_->ChangeEncryptionInfo(req, encryption_info));
+  RETURN_NOT_OK(update(encryption_info));
 
   l.mutable_data()->pb.set_version(l.mutable_data()->pb.version() + 1);
   RETURN_NOT_OK(CheckStatus(

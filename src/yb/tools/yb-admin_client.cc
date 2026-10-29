@@ -4092,6 +4092,25 @@ Status ClusterAdminClient::RotateUniverseKeyInMemory(const std::string& key_id) 
   return Status::OK();
 }
 
+Status ClusterAdminClient::SetEncryptionDataKeySize(uint32_t data_key_size_bytes) {
+  RETURN_NOT_OK_PREPEND(WaitUntilMasterLeaderReady(), "Wait for master leader failed!");
+  rpc::RpcController rpc;
+  rpc.set_timeout(timeout_);
+
+  master::SetEncryptionDataKeySizeRequestPB req;
+  master::SetEncryptionDataKeySizeResponsePB resp;
+  req.set_data_key_size_bytes(data_key_size_bytes);
+  RETURN_NOT_OK_PREPEND(
+      master_encryption_proxy_->SetEncryptionDataKeySize(req, &resp, &rpc),
+      "MasterServiceImpl::SetEncryptionDataKeySize call fails.");
+  if (resp.has_error()) {
+    return StatusFromPB(resp.error().status());
+  }
+
+  std::cout << "Data key size for new files set to " << data_key_size_bytes << " bytes\n";
+  return Status::OK();
+}
+
 Status ClusterAdminClient::DisableEncryptionInMemory() {
   RETURN_NOT_OK_PREPEND(WaitUntilMasterLeaderReady(), "Wait for master leader failed!");
   rpc::RpcController rpc;

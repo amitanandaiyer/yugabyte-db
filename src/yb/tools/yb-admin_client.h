@@ -429,6 +429,8 @@ class ClusterAdminClient {
 
   Status RotateUniverseKeyInMemory(const std::string& key_id);
 
+  Status SetEncryptionDataKeySize(uint32_t data_key_size_bytes);
+
   Status DisableEncryptionInMemory();
 
   Status WriteUniverseKeyToFile(const std::string& key_id, const std::string& file_name);
