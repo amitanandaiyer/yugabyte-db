@@ -58,7 +58,6 @@ DEFINE_RUNTIME_uint32(encryption_data_key_size_bytes, 0,
     "writes: 16 for AES-128, 32 for AES-256. 0 uses the registry. For diagnostics only.");
 DEFINE_validator(encryption_data_key_size_bytes, FLAG_IN_SET_VALIDATOR(0, 16, 32));
 TAG_FLAG(encryption_data_key_size_bytes, advanced);
-TAG_FLAG(encryption_data_key_size_bytes, hidden);
 
 DEFINE_RUNTIME_uint32(encryption_new_universe_data_key_size_bytes, 32,
     "Data-key size recorded in the universe key registry when encryption at rest is enabled for "
@@ -66,7 +65,6 @@ DEFINE_RUNTIME_uint32(encryption_new_universe_data_key_size_bytes, 32,
     "at rest keep their recorded size.");
 DEFINE_validator(encryption_new_universe_data_key_size_bytes, FLAG_IN_SET_VALIDATOR(16, 32));
 TAG_FLAG(encryption_new_universe_data_key_size_bytes, advanced);
-TAG_FLAG(encryption_new_universe_data_key_size_bytes, hidden);
 
 DEFINE_test_flag(bool, encryption_use_openssl_compatible_counter_overflow, true,
                  "Overflow into the rest of the initialization vector when computing counter"
