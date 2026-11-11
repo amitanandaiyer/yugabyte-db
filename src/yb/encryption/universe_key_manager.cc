@@ -79,7 +79,14 @@ Result<uint32_t> UniverseKeyManager::GetDataKeySize() {
   std::lock_guard l(mutex_);
   SCHECK(received_universe_key_registry_, IllegalState, "Universe key registry not received");
   auto size = universe_key_registry_.data_key_size_bytes();
-  return size != 0 ? size : EncryptionParams::kAes128KeySize;
+  if (size == 0) {
+    return EncryptionParams::kAes128KeySize;
+  }
+  // The size comes from the master. Fail the file write rather than crash in NewEncryptionParams
+  // if a later release or a bad registry sends a size this release does not support.
+  RETURN_NOT_OK_PREPEND(EncryptionParams::IsValidKeySize(size),
+                        "Invalid data key size in universe key registry");
+  return size;
 }
 
 Result<bool> UniverseKeyManager::IsEncryptionEnabled() {

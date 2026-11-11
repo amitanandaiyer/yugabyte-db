@@ -16,6 +16,7 @@
 #include "yb/util/logging.h"
 #include <gtest/gtest.h>
 
+#include "yb/encryption/encryption.pb.h"
 #include "yb/encryption/encryption_util.h"
 #include "yb/encryption/header_manager_impl.h"
 #include "yb/encryption/universe_key_manager.h"
@@ -74,6 +75,17 @@ TEST_F(TestHeaderManagerImpl, DataKeySize) {
       EncryptionParams::kAes256KeySize;
   ASSERT_EQ(ASSERT_RESULT(legacy_manager->GetDataKeySize()), EncryptionParams::kAes256KeySize);
   ANNOTATE_UNPROTECTED_WRITE(FLAGS_encryption_data_key_size_bytes) = 0;
+
+  // A size this release does not support fails file creation instead of crashing the tserver.
+  encryption::UniverseKeyRegistryPB registry;
+  registry.set_encryption_enabled(true);
+  auto params = ASSERT_RESULT(EncryptionParams::FromSlice(Slice(key.data(), key.size())));
+  params->ToEncryptionParamsPB(&(*registry.mutable_universe_keys())["bad"]);
+  registry.set_latest_version_id("bad");
+  registry.set_data_key_size_bytes(20);
+  encryption::UniverseKeyManager bad_manager;
+  bad_manager.SetUniverseKeyRegistry(registry);
+  ASSERT_NOK(bad_manager.GetDataKeySize());
 }
 
 } // namespace yb
