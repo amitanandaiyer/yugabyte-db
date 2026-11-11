@@ -1783,6 +1783,15 @@ void TabletServerPathHandlers::HandleEncryptionKeyReportJSON(
     return;
   }
 
+  // Without the registry every encrypted file is undecodable, which would hide AES-128 files.
+  if (auto enabled = universe_key_manager->IsEncryptionEnabled(); !enabled.ok()) {
+    jw.StartObject();
+    jw.String("error");
+    jw.String(enabled.status().ToString());
+    jw.EndObject();
+    return;
+  }
+
   auto* fs_manager = tserver_->fs_manager();
   std::set<std::string> roots;
   for (auto dirs : {fs_manager->GetDataRootDirs(), fs_manager->GetWalRootDirs(),

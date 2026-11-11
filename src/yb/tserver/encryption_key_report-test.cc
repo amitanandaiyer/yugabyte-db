@@ -105,6 +105,7 @@ TEST_F(EncryptionKeyReportTest, GroupsByKeySizeAndCategory) {
   ASSERT_EQ(files(Category::kMetadata, FileType::kOther, true, 32), 1);
   ASSERT_EQ(report.groups.size(), 7);
   ASSERT_EQ(report.unreadable_files, 0);
+  ASSERT_EQ(report.undecodable_files, 0);
   // 000010.sst, MANIFEST, the snapshot SST and the WAL segment use 16-byte data keys.
   ASSERT_EQ(report.aes128_files, 4);
   ASSERT_TRUE(report.aes128_paths.empty());
@@ -114,6 +115,27 @@ TEST_F(EncryptionKeyReportTest, GroupsByKeySizeAndCategory) {
       universe_key_manager_.get(), /* max_aes128_paths= */ 2));
   ASSERT_EQ(limited_report.aes128_files, 4);
   ASSERT_EQ(limited_report.aes128_paths.size(), 2);
+}
+
+// A file under a universe key missing from the registry is reported under that key, with unknown
+// key sizes, rather than dropped from the report.
+TEST_F(EncryptionKeyReportTest, MissingUniverseKey) {
+  auto other_key_manager = tserver::GenerateTestUniverseKeyManager();
+  auto other_env = NewEncryptedEnv(DefaultHeaderManager(other_key_manager.get()));
+  ASSERT_NO_FATALS(WriteFile(other_env.get(), "data/rocksdb/tablet-1/000010.sst", 16));
+  auto other_key_id = ASSERT_RESULT(other_key_manager->GetLatestUniverseParams()).version_id;
+
+  auto report = ASSERT_RESULT(CollectEncryptionKeyReport(
+      {root_}, env_.get(), DefaultHeaderManager(universe_key_manager_.get()).get(),
+      universe_key_manager_.get()));
+  EncryptionKeyReport::Key key{
+      .category = Category::kData, .file_type = FileType::kSst, .encrypted = true,
+      .data_key_bytes = 0, .universe_key_id = other_key_id, .universe_key_bytes = 0};
+  ASSERT_EQ(report.groups.size(), 1);
+  ASSERT_EQ(report.groups.begin()->first, key);
+  ASSERT_EQ(report.undecodable_files, 1);
+  ASSERT_EQ(report.unreadable_files, 0);
+  ASSERT_EQ(report.aes128_files, 0);
 }
 
 } // namespace yb::encryption

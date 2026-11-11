@@ -48,10 +48,10 @@ struct EncryptionKeyReport {
     EncryptionKeyReportFileCategory category;
     EncryptionKeyReportFileType file_type;
     bool encrypted;
-    // Zero for unencrypted files.
+    // Zero for unencrypted and undecodable files.
     uint32_t data_key_bytes;
     UniverseKeyId universe_key_id;
-    // Zero when the file is unencrypted or its universe key is not in the registry.
+    // Zero for unencrypted and undecodable files.
     uint32_t universe_key_bytes;
 
     auto operator<=>(const Key&) const = default;
@@ -65,6 +65,10 @@ struct EncryptionKeyReport {
   std::map<Key, Totals> groups;
   // Files that could not be read, e.g. deleted during the walk.
   uint64_t unreadable_files = 0;
+  // Encrypted files whose universe key is not in the registry, so their data key cannot be
+  // decrypted. They are grouped under that universe key with zero key sizes and, since their key
+  // sizes are unknown, are not counted in aes128_files.
+  uint64_t undecodable_files = 0;
   // Encrypted files under a 16-byte data key or universe key. Always counted; paths are kept only
   // up to the requested limit, so aes128_paths.size() can be less than aes128_files.
   uint64_t aes128_files = 0;

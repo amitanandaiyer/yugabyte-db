@@ -81,12 +81,26 @@ Status AddFile(
       .universe_key_bytes = 0};
   std::unique_ptr<BlockAccessCipherStream> stream;
   uint32_t header_size;
+  bool undecodable = false;
   // Empty and very short files cannot carry an encryption header.
   if (bytes >= header_manager->GetEncryptionMetadataStartIndex()) {
-    key.encrypted = VERIFY_RESULT(GetEncryptionInfoFromFile<uint8_t>(
-        header_manager, file.get(), &stream, &header_size, &key.universe_key_id));
+    auto encrypted = GetEncryptionInfoFromFile<uint8_t>(
+        header_manager, file.get(), &stream, &header_size, &key.universe_key_id);
+    if (encrypted.ok()) {
+      key.encrypted = *encrypted;
+    } else if (!key.universe_key_id.empty()) {
+      // The header names its universe key, which is parsed before the data key is decrypted, so
+      // this file is encrypted under a universe key that is missing from the registry.
+      VLOG(1) << "Cannot decrypt the data key of " << path << ": " << encrypted.status();
+      key.encrypted = true;
+      undecodable = true;
+    } else {
+      return encrypted.status();
+    }
   }
-  if (key.encrypted) {
+  if (undecodable) {
+    ++report->undecodable_files;
+  } else if (key.encrypted) {
     key.data_key_bytes = stream->key_size();
     auto universe_params = universe_key_manager->GetUniverseParamsWithVersion(key.universe_key_id);
     if (universe_params.ok()) {
@@ -164,6 +178,8 @@ void EncryptionKeyReport::ToJson(JsonWriter* jw) const {
   jw->EndArray();
   jw->String("unreadable_files");
   jw->Uint64(unreadable_files);
+  jw->String("undecodable_files");
+  jw->Uint64(undecodable_files);
   jw->String("aes128_files");
   jw->Uint64(aes128_files);
   if (!aes128_paths.empty()) {

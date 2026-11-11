@@ -162,7 +162,7 @@ Clusters that enabled encryption at rest before AES-256 became the default, or w
     curl "http://<tserver-host>:9000/api/v1/encryption-key-report?list_aes128_files"
     ```
 
-    The report groups the files on the node by category (`Data`, `Wal`, `Snapshot`, `Metadata`), file type, data key size (`data_key_bits`), and the universe key that encrypts the data key (`universe_key_id`, `universe_key_bits`). `aes128_files` is the number of files still protected by a 128-bit key; with `list_aes128_files`, the report also lists their paths, up to 1000, and sets `aes128_paths_truncated` if there are more. Migration is complete when only the files described in the previous step remain on 128-bit keys. The report reads the header of every file on the node, so avoid running it frequently on nodes with many files.
+    The report groups the files on the node by category (`Data`, `Wal`, `Snapshot`, `Metadata`), file type, data key size (`data_key_bits`), and the universe key that encrypts the data key (`universe_key_id`, `universe_key_bits`). `aes128_files` is the number of files still protected by a 128-bit key; with `list_aes128_files`, the report also lists their paths, up to 1000, and sets `aes128_paths_truncated` if there are more. `unreadable_files` counts files whose header could not be read, and `undecodable_files` counts encrypted files whose universe key is missing from the cluster, so their key sizes are unknown. Migration is complete when both are 0 and only the files described in the previous step remain on 128-bit keys. The report reads the header of every file on the node, so avoid running it frequently on nodes with many files.
 
 ## Disable encryption
 
