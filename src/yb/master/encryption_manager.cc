@@ -125,13 +125,13 @@ Status EncryptionManager::ChangeEncryptionInfo(const ChangeEncryptionInfoRequest
   return Status::OK();
 }
 
-Status EncryptionManager::SetDataKeySize(const SetEncryptionDataKeySizeRequestPB* req,
-                                         EncryptionInfoPB* encryption_info) {
+Status EncryptionManager::SetEncryptionAlgorithm(const SetEncryptionAlgorithmRequestPB* req,
+                                                 EncryptionInfoPB* encryption_info) {
   SCHECK(encryption_info->encryption_enabled(), InvalidArgument,
          "Encryption at rest is not enabled");
+  SCHECK(req->has_algorithm(), InvalidArgument, "No encryption algorithm given");
   auto universe_key = VERIFY_RESULT(GetLatestUniverseKey(encryption_info));
-  return master::SetDataKeySize(
-      Slice(universe_key), req->data_key_size_bytes(), encryption_info);
+  return master::SetEncryptionAlgorithm(Slice(universe_key), req->algorithm(), encryption_info);
 }
 
 Status EncryptionManager::IsEncryptionEnabled(const EncryptionInfoPB& encryption_info,

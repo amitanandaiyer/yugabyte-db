@@ -19,6 +19,7 @@
 #include <string>
 
 #include "yb/encryption/cipher_stream.h"
+#include "yb/encryption/encryption.pb.h"
 #include "yb/encryption/header_manager.h"
 
 #include "yb/util/status_fwd.h"
@@ -78,8 +79,17 @@ struct EncryptionParams {
 
 typedef std::unique_ptr<EncryptionParams> EncryptionParamsPtr;
 
-// Size of a universe key blob whose AES key is as long as the data keys of a new universe
-// (encryption_new_universe_data_key_size_bytes).
+// Parses an algorithm name without its ENCRYPTION_ALGORITHM_ prefix, such as AES_256_CTR.
+Result<EncryptionAlgorithmPB> ParseEncryptionAlgorithm(const std::string& name);
+std::string EncryptionAlgorithmName(EncryptionAlgorithmPB algorithm);
+
+// Size of the data keys of new files encrypted with algorithm.
+Result<uint32_t> DataKeySize(EncryptionAlgorithmPB algorithm);
+
+// encryption_new_universe_algorithm.
+Result<EncryptionAlgorithmPB> NewUniverseEncryptionAlgorithm();
+
+// Size of a universe key blob whose AES key is as long as the data keys of a new universe.
 uint32_t DefaultUniverseKeySize();
 
 // Since this will typically be passed in by an external user (YW or yb-admin), UniverseKeyId

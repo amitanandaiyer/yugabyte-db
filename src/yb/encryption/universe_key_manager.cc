@@ -18,7 +18,7 @@
 
 #include "yb/util/debug-util.h"
 
-DECLARE_uint32(encryption_data_key_size_bytes);
+DECLARE_string(encryption_algorithm_override);
 
 namespace yb {
 namespace encryption {
@@ -72,21 +72,19 @@ Result<UniverseKeyParams> UniverseKeyManager::GetLatestUniverseParams() {
   return universe_key_params;
 }
 
-Result<uint32_t> UniverseKeyManager::GetDataKeySize() {
-  if (auto override_size = FLAGS_encryption_data_key_size_bytes; override_size != 0) {
-    return override_size;
+Result<EncryptionAlgorithmPB> UniverseKeyManager::GetEncryptionAlgorithm() {
+  if (auto override_name = FLAGS_encryption_algorithm_override; !override_name.empty()) {
+    return ParseEncryptionAlgorithm(override_name);
   }
   std::lock_guard l(mutex_);
   SCHECK(received_universe_key_registry_, IllegalState, "Universe key registry not received");
-  auto size = universe_key_registry_.data_key_size_bytes();
-  if (size == 0) {
-    return EncryptionParams::kAes128KeySize;
-  }
-  // The size comes from the master. Fail the file write rather than crash in NewEncryptionParams
-  // if a later release or a bad registry sends a size this release does not support.
-  RETURN_NOT_OK_PREPEND(EncryptionParams::IsValidKeySize(size),
-                        "Invalid data key size in universe key registry");
-  return size;
+  return universe_key_registry_.encryption_algorithm();
+}
+
+Result<uint32_t> UniverseKeyManager::GetDataKeySize() {
+  // The algorithm comes from the master. An algorithm this release does not support fails the file
+  // write instead of crashing in NewEncryptionParams.
+  return DataKeySize(VERIFY_RESULT(GetEncryptionAlgorithm()));
 }
 
 Result<bool> UniverseKeyManager::IsEncryptionEnabled() {

@@ -30,7 +30,7 @@
 #include "yb/util/status_fwd.h"
 #include "yb/util/test_util.h"
 
-DECLARE_uint32(encryption_data_key_size_bytes);
+DECLARE_string(encryption_algorithm_override);
 
 using std::string;
 
@@ -62,7 +62,7 @@ TEST_F(TestHeaderManagerImpl, FileOps) {
 
 TEST_F(TestHeaderManagerImpl, DataKeySize) {
   using encryption::EncryptionParams;
-  // A registry without a recorded size predates the field, so its universe stays on AES-128.
+  // A registry without a recorded algorithm predates the field, so its universe stays on AES-128.
   auto key = RandomBytes(encryption::DefaultUniverseKeySize());
   auto legacy_manager = ASSERT_RESULT(encryption::UniverseKeyManager::FromKey(
       "legacy", Slice(key.data(), key.size())));
@@ -71,18 +71,18 @@ TEST_F(TestHeaderManagerImpl, DataKeySize) {
   auto new_manager = GenerateTestUniverseKeyManager();
   ASSERT_EQ(ASSERT_RESULT(new_manager->GetDataKeySize()), EncryptionParams::kAes256KeySize);
 
-  ANNOTATE_UNPROTECTED_WRITE(FLAGS_encryption_data_key_size_bytes) =
-      EncryptionParams::kAes256KeySize;
+  ANNOTATE_UNPROTECTED_WRITE(FLAGS_encryption_algorithm_override) = "AES_256_CTR";
   ASSERT_EQ(ASSERT_RESULT(legacy_manager->GetDataKeySize()), EncryptionParams::kAes256KeySize);
-  ANNOTATE_UNPROTECTED_WRITE(FLAGS_encryption_data_key_size_bytes) = 0;
+  ANNOTATE_UNPROTECTED_WRITE(FLAGS_encryption_algorithm_override) = "";
 
-  // A size this release does not support fails file creation instead of crashing the tserver.
+  // An algorithm this release does not support fails file creation instead of crashing the
+  // tserver.
   encryption::UniverseKeyRegistryPB registry;
   registry.set_encryption_enabled(true);
   auto params = ASSERT_RESULT(EncryptionParams::FromSlice(Slice(key.data(), key.size())));
   params->ToEncryptionParamsPB(&(*registry.mutable_universe_keys())["bad"]);
   registry.set_latest_version_id("bad");
-  registry.set_data_key_size_bytes(20);
+  registry.set_encryption_algorithm(static_cast<encryption::EncryptionAlgorithmPB>(100));
   encryption::UniverseKeyManager bad_manager;
   bad_manager.SetUniverseKeyRegistry(registry);
   ASSERT_NOK(bad_manager.GetDataKeySize());

@@ -1706,10 +1706,10 @@ Status CatalogManager::ChangeEncryptionInfo(const ChangeEncryptionInfoRequestPB*
   });
 }
 
-Status CatalogManager::SetEncryptionDataKeySize(const SetEncryptionDataKeySizeRequestPB* req,
-                                                SetEncryptionDataKeySizeResponsePB* resp) {
+Status CatalogManager::SetEncryptionAlgorithm(const SetEncryptionAlgorithmRequestPB* req,
+                                              SetEncryptionAlgorithmResponsePB* resp) {
   return UpdateEncryptionInfo([this, req](EncryptionInfoPB* encryption_info) {
-    return encryption_manager_->SetDataKeySize(req, encryption_info);
+    return encryption_manager_->SetEncryptionAlgorithm(req, encryption_info);
   });
 }
 

@@ -14,6 +14,8 @@
 
 #include <string>
 
+#include "yb/encryption/encryption.pb.h"
+
 #include "yb/util/status_fwd.h"
 
 namespace yb {
@@ -34,9 +36,11 @@ Status RotateUniverseKey(const Slice& old_universe_key,
                          bool enable,
                          EncryptionInfoPB* encryption_info);
 
-// Change the data-key size recorded in the universe key registry. Encryption must be enabled and
-// universe_key must be the latest universe key, which the registry is encrypted with.
-Status SetDataKeySize(const Slice& universe_key, uint32_t data_key_size_bytes,
-                      EncryptionInfoPB* encryption_info);
+// Change the encryption algorithm recorded in the universe key registry for new files. Encryption
+// must be enabled and universe_key must be the latest universe key, which the registry is
+// encrypted with.
+Status SetEncryptionAlgorithm(
+    const Slice& universe_key, encryption::EncryptionAlgorithmPB algorithm,
+    EncryptionInfoPB* encryption_info);
 } // namespace master
 } // namespace yb

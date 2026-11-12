@@ -4092,22 +4092,23 @@ Status ClusterAdminClient::RotateUniverseKeyInMemory(const std::string& key_id) 
   return Status::OK();
 }
 
-Status ClusterAdminClient::SetEncryptionDataKeySize(uint32_t data_key_size_bytes) {
+Status ClusterAdminClient::SetEncryptionAlgorithm(encryption::EncryptionAlgorithmPB algorithm) {
   RETURN_NOT_OK_PREPEND(WaitUntilMasterLeaderReady(), "Wait for master leader failed!");
   rpc::RpcController rpc;
   rpc.set_timeout(timeout_);
 
-  master::SetEncryptionDataKeySizeRequestPB req;
-  master::SetEncryptionDataKeySizeResponsePB resp;
-  req.set_data_key_size_bytes(data_key_size_bytes);
+  master::SetEncryptionAlgorithmRequestPB req;
+  master::SetEncryptionAlgorithmResponsePB resp;
+  req.set_algorithm(algorithm);
   RETURN_NOT_OK_PREPEND(
-      master_encryption_proxy_->SetEncryptionDataKeySize(req, &resp, &rpc),
-      "MasterServiceImpl::SetEncryptionDataKeySize call fails.");
+      master_encryption_proxy_->SetEncryptionAlgorithm(req, &resp, &rpc),
+      "MasterServiceImpl::SetEncryptionAlgorithm call fails.");
   if (resp.has_error()) {
     return StatusFromPB(resp.error().status());
   }
 
-  std::cout << "Data key size for new files set to " << data_key_size_bytes << " bytes\n";
+  std::cout << "Encryption algorithm for new files set to "
+            << encryption::EncryptionAlgorithmName(algorithm) << "\n";
   return Status::OK();
 }
 

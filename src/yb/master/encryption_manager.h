@@ -63,8 +63,8 @@ class EncryptionManager {
   Status IsEncryptionEnabled(const EncryptionInfoPB& encryption_info,
                              IsEncryptionEnabledResponsePB* resp);
 
-  Status SetDataKeySize(const SetEncryptionDataKeySizeRequestPB* req,
-                        EncryptionInfoPB* encryption_info);
+  Status SetEncryptionAlgorithm(const SetEncryptionAlgorithmRequestPB* req,
+                                EncryptionInfoPB* encryption_info);
 
   EncryptionState GetEncryptionState(
       const EncryptionInfoPB& encryption_info, IsEncryptionEnabledResponsePB* encryption_resp);

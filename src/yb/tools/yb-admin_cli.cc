@@ -53,6 +53,8 @@
 #include "yb/common/wire_protocol.h"
 #include "yb/common/xcluster_util.h"
 
+#include "yb/encryption/encryption_util.h"
+
 #include "yb/gutil/casts.h"
 #include "yb/gutil/map-util.h"
 #include "yb/gutil/strings/escaping.h"
@@ -2290,15 +2292,15 @@ Status rotate_universe_key_in_memory_action(
   return Status::OK();
 }
 
-const auto set_encryption_data_key_size_args = "<16|32>";
-Status set_encryption_data_key_size_action(
+const auto set_encryption_algorithm_args = "<AES_128_CTR|AES_256_CTR>";
+Status set_encryption_algorithm_action(
     const ClusterAdminCli::CLIArguments& args, ClusterAdminClient* client) {
   if (args.size() != 1) {
     return ClusterAdminCli::kInvalidArguments;
   }
-  const auto size = VERIFY_RESULT(CheckedStoInt<uint32_t>(args[0]));
+  const auto algorithm = VERIFY_RESULT(encryption::ParseEncryptionAlgorithm(args[0]));
   RETURN_NOT_OK_PREPEND(
-      client->SetEncryptionDataKeySize(size), "Unable to set encryption data key size.");
+      client->SetEncryptionAlgorithm(algorithm), "Unable to set the encryption algorithm.");
   return Status::OK();
 }
 
@@ -3605,7 +3607,7 @@ void ClusterAdminCli::RegisterCommandHandlers() {
   REGISTER_COMMAND(add_universe_key_to_all_masters);
   REGISTER_COMMAND(all_masters_have_universe_key_in_memory);
   REGISTER_COMMAND(rotate_universe_key_in_memory);
-  REGISTER_COMMAND(set_encryption_data_key_size);
+  REGISTER_COMMAND(set_encryption_algorithm);
   REGISTER_COMMAND(disable_encryption_in_memory);
   REGISTER_COMMAND(write_universe_key_to_file);
   REGISTER_COMMAND(are_nodes_safe_to_take_down);

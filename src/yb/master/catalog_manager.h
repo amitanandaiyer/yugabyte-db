@@ -902,8 +902,8 @@ class CatalogManager : public CatalogManagerIf, public SnapshotCoordinatorContex
   Status ChangeEncryptionInfo(
       const ChangeEncryptionInfoRequestPB* req, ChangeEncryptionInfoResponsePB* resp);
 
-  Status SetEncryptionDataKeySize(
-      const SetEncryptionDataKeySizeRequestPB* req, SetEncryptionDataKeySizeResponsePB* resp);
+  Status SetEncryptionAlgorithm(
+      const SetEncryptionAlgorithmRequestPB* req, SetEncryptionAlgorithmResponsePB* resp);
 
   // Applies update to the cluster config's encryption info, persists it, and resends the universe
   // key registry to tservers on their next heartbeat.

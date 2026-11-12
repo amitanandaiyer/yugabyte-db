@@ -51,20 +51,22 @@ DEFINE_UNKNOWN_int64(encryption_counter_max, 0x7fffffffLL,
 TAG_FLAG(encryption_counter_max, advanced);
 TAG_FLAG(encryption_counter_max, hidden);
 
-// Readers take the key size from each file's header, so files written with either size stay
+// Readers take the key size from each file's header, so files written with either algorithm stay
 // readable by every release that supports encryption at rest.
-DEFINE_RUNTIME_uint32(encryption_data_key_size_bytes, 0,
-    "Overrides the data-key size recorded in the universe key registry for files this tserver "
-    "writes: 16 for AES-128, 32 for AES-256. 0 uses the registry. For diagnostics only.");
-DEFINE_validator(encryption_data_key_size_bytes, FLAG_IN_SET_VALIDATOR(0, 16, 32));
-TAG_FLAG(encryption_data_key_size_bytes, advanced);
+DEFINE_RUNTIME_string(encryption_algorithm_override, "",
+    "Overrides the encryption algorithm recorded in the universe key registry for files this "
+    "tserver writes: AES_128_CTR or AES_256_CTR. Empty uses the registry. For diagnostics only.");
+DEFINE_validator(encryption_algorithm_override,
+    FLAG_IN_SET_VALIDATOR("", "AES_128_CTR", "AES_256_CTR"));
+TAG_FLAG(encryption_algorithm_override, advanced);
 
-DEFINE_RUNTIME_uint32(encryption_new_universe_data_key_size_bytes, 32,
-    "Data-key size recorded in the universe key registry when encryption at rest is enabled for "
-    "the first time: 32 for AES-256, 16 for AES-128. Universes that already enabled encryption "
-    "at rest keep their recorded size.");
-DEFINE_validator(encryption_new_universe_data_key_size_bytes, FLAG_IN_SET_VALIDATOR(16, 32));
-TAG_FLAG(encryption_new_universe_data_key_size_bytes, advanced);
+DEFINE_RUNTIME_string(encryption_new_universe_algorithm, "AES_256_CTR",
+    "Encryption algorithm recorded in the universe key registry when encryption at rest is "
+    "enabled for the first time: AES_256_CTR or AES_128_CTR. Universes that already enabled "
+    "encryption at rest keep their recorded algorithm.");
+DEFINE_validator(encryption_new_universe_algorithm,
+    FLAG_IN_SET_VALIDATOR("AES_128_CTR", "AES_256_CTR"));
+TAG_FLAG(encryption_new_universe_algorithm, advanced);
 
 DEFINE_test_flag(bool, encryption_use_openssl_compatible_counter_overflow, true,
                  "Overflow into the rest of the initialization vector when computing counter"
@@ -137,9 +139,40 @@ EncryptionParamsPtr EncryptionParams::NewEncryptionParams(uint32_t key_size) {
   return encryption_params;
 }
 
+Result<EncryptionAlgorithmPB> ParseEncryptionAlgorithm(const std::string& name) {
+  EncryptionAlgorithmPB algorithm;
+  SCHECK(EncryptionAlgorithmPB_Parse("ENCRYPTION_ALGORITHM_" + name, &algorithm), InvalidArgument,
+         Format("Unknown encryption algorithm $0; expected AES_128_CTR or AES_256_CTR", name));
+  return algorithm;
+}
+
+std::string EncryptionAlgorithmName(EncryptionAlgorithmPB algorithm) {
+  constexpr std::string_view kPrefix = "ENCRYPTION_ALGORITHM_";
+  const auto& name = EncryptionAlgorithmPB_Name(algorithm);
+  return name.starts_with(kPrefix) ? name.substr(kPrefix.size()) : std::to_string(algorithm);
+}
+
+Result<uint32_t> DataKeySize(EncryptionAlgorithmPB algorithm) {
+  switch (algorithm) {
+    case ENCRYPTION_ALGORITHM_AES_128_CTR:
+      return EncryptionParams::kAes128KeySize;
+    case ENCRYPTION_ALGORITHM_AES_256_CTR:
+      return EncryptionParams::kAes256KeySize;
+    default:
+      // A later release, or a bad registry, can send a value this release does not support.
+      return STATUS_FORMAT(
+          NotSupported, "Unsupported encryption algorithm $0", static_cast<int>(algorithm));
+  }
+}
+
+Result<EncryptionAlgorithmPB> NewUniverseEncryptionAlgorithm() {
+  return ParseEncryptionAlgorithm(FLAGS_encryption_new_universe_algorithm);
+}
+
 uint32_t DefaultUniverseKeySize() {
-  return EncryptionParams::kUniverseKeyPrefixSize +
-         FLAGS_encryption_new_universe_data_key_size_bytes;
+  // The flag validator only allows supported algorithms.
+  auto algorithm = CHECK_RESULT(NewUniverseEncryptionAlgorithm());
+  return EncryptionParams::kUniverseKeyPrefixSize + CHECK_RESULT(DataKeySize(algorithm));
 }
 
 Status EncryptionParams::IsValidKeySize(size_t size) {

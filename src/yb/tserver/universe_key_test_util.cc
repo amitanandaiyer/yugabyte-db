@@ -32,7 +32,7 @@ std::unique_ptr<encryption::UniverseKeyManager> GenerateTestUniverseKeyManager()
   (*registry.mutable_universe_keys())[version_id] = params_pb;
   registry.set_encryption_enabled(true);
   registry.set_latest_version_id(version_id);
-  registry.set_data_key_size_bytes(encryption::EncryptionParams::kAes256KeySize);
+  registry.set_encryption_algorithm(encryption::ENCRYPTION_ALGORITHM_AES_256_CTR);
   universe_key_manager->SetUniverseKeyRegistry(registry);
   return universe_key_manager;
 }

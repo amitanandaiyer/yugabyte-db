@@ -31,11 +31,11 @@ message ChangeEncryptionInfoResponsePB {
   optional MasterErrorPB error = 1;
 }
 
-message SetEncryptionDataKeySizeRequestPB {
-  optional uint32 data_key_size_bytes = 1;
+message SetEncryptionAlgorithmRequestPB {
+  optional encryption.EncryptionAlgorithmPB algorithm = 1;
 }
 
-message SetEncryptionDataKeySizeResponsePB {
+message SetEncryptionAlgorithmResponsePB {
   optional MasterErrorPB error = 1;
 }
 
@@ -88,8 +88,8 @@ service MasterEncryption {
 
   rpc IsEncryptionEnabled(IsEncryptionEnabledRequestPB) returns (IsEncryptionEnabledResponsePB);
 
-  rpc SetEncryptionDataKeySize(SetEncryptionDataKeySizeRequestPB)
-      returns (SetEncryptionDataKeySizeResponsePB);
+  rpc SetEncryptionAlgorithm(SetEncryptionAlgorithmRequestPB)
+      returns (SetEncryptionAlgorithmResponsePB);
 
   rpc AddUniverseKeys(AddUniverseKeysRequestPB)  returns (AddUniverseKeysResponsePB);
   rpc GetUniverseKeyRegistry(GetUniverseKeyRegistryRequestPB)

@@ -35,8 +35,10 @@ class UniverseKeyManager {
   // Get the latest universe key in the registry. Used when creating writable files.
   Result<UniverseKeyParams> GetLatestUniverseParams();
   Result<bool> IsEncryptionEnabled();
-  // Size of data keys for new files: encryption_data_key_size_bytes if set, otherwise the size
-  // recorded in the registry.
+  // Algorithm for new files: encryption_algorithm_override if set, otherwise the algorithm recorded
+  // in the registry.
+  Result<EncryptionAlgorithmPB> GetEncryptionAlgorithm();
+  // Size of data keys for new files, from GetEncryptionAlgorithm().
   Result<uint32_t> GetDataKeySize();
  private:
   // Registry from master.
