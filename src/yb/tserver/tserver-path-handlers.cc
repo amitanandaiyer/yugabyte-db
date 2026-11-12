@@ -57,6 +57,7 @@
 #include "yb/docdb/properties_collector/sst_stats_collector.h"
 
 #include "yb/encryption/encryption_key_report.h"
+#include "yb/encryption/encryption_util.h"
 #include "yb/encryption/header_manager_impl.h"
 #include "yb/encryption/universe_key_manager.h"
 
@@ -1814,6 +1815,11 @@ void TabletServerPathHandlers::HandleEncryptionKeyReportJSON(
   }
 
   jw.StartObject();
+  auto algorithm = universe_key_manager->GetEncryptionAlgorithm();
+  if (algorithm.ok()) {
+    jw.String("encryption_algorithm_for_new_files");
+    jw.String(encryption::EncryptionAlgorithmName(*algorithm));
+  }
   auto data_key_size = universe_key_manager->GetDataKeySize();
   if (data_key_size.ok()) {
     jw.String("data_key_bits_for_new_files");

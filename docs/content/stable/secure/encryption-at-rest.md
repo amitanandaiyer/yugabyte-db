@@ -133,7 +133,7 @@ Clusters that enabled encryption at rest before AES-256 became the default, or w
 1. Switch new data files to 256-bit data keys:
 
     ```sh
-    yb-admin --master_addresses $MASTER_ADDRESSES set_encryption_data_key_size 32
+    yb-admin --master_addresses $MASTER_ADDRESSES set_encryption_algorithm AES_256_CTR
     ```
 
     YB-TServers pick up the change on their next heartbeat to the YB-Master leader.

@@ -529,7 +529,7 @@ TEST_F_EX(EncryptionTest, WALRolloverAndRestart, WALRolloverTest) {
 class EncryptionMigrationTest : public EncryptionTest {
  public:
   void CustomizeExternalMiniCluster(ExternalMiniClusterOptions* opts) override {
-    opts->extra_master_flags.push_back("--encryption_new_universe_data_key_size_bytes=16");
+    opts->extra_master_flags.push_back("--encryption_new_universe_algorithm=AES_128_CTR");
   }
 
   void BeforeCreateTable() override {
@@ -557,11 +557,11 @@ TEST_F_EX(EncryptionTest, MigrateFromAes128ToAes256, EncryptionMigrationTest) {
   // MANIFEST and CURRENT.
   ASSERT_NO_FATALS(AddUniverseKeys(kAes256UniverseKeySize));
   ASSERT_NO_FATALS(RotateKey());
-  // Rotating the universe key alone does not change the data-key size.
+  // Rotating the universe key alone does not change the algorithm for new files.
   SleepFor(MonoDelta::FromMilliseconds(2 * FLAGS_heartbeat_interval_ms));
   ASSERT_OK(WaitForDataKeyBits(128));
-  ASSERT_OK(yb_admin_client_->SetEncryptionDataKeySize(
-      encryption::EncryptionParams::kAes256KeySize));
+  ASSERT_OK(yb_admin_client_->SetEncryptionAlgorithm(
+      encryption::ENCRYPTION_ALGORITHM_AES_256_CTR));
   ASSERT_OK(WaitForDataKeyBits(256));
   WriteWorkload(kNumKeys, 2 * kNumKeys);
 

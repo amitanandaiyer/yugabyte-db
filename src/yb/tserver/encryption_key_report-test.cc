@@ -28,7 +28,7 @@
 #include "yb/util/path_util.h"
 #include "yb/util/test_util.h"
 
-DECLARE_uint32(encryption_data_key_size_bytes);
+DECLARE_string(encryption_algorithm_override);
 
 namespace yb::encryption {
 
@@ -39,14 +39,15 @@ class EncryptionKeyReportTest : public YBTest {
  protected:
   void SetUp() override {
     YBTest::SetUp();
-    ANNOTATE_UNPROTECTED_WRITE(FLAGS_encryption_data_key_size_bytes) = 32;
+    ANNOTATE_UNPROTECTED_WRITE(FLAGS_encryption_algorithm_override) = "AES_256_CTR";
     universe_key_manager_ = tserver::GenerateTestUniverseKeyManager();
     encrypted_env_ = NewEncryptedEnv(DefaultHeaderManager(universe_key_manager_.get()));
     root_ = GetTestPath("root");
   }
 
   void WriteFile(Env* env, const std::string& relative_path, uint32_t data_key_size) {
-    ANNOTATE_UNPROTECTED_WRITE(FLAGS_encryption_data_key_size_bytes) = data_key_size;
+    ANNOTATE_UNPROTECTED_WRITE(FLAGS_encryption_algorithm_override) =
+        data_key_size == 16 ? "AES_128_CTR" : "AES_256_CTR";
     auto path = JoinPathSegments(root_, relative_path);
     ASSERT_OK(env_->CreateDirs(DirName(path)));
     // The encrypted Env only encrypts new files created through NewTempWritableFile.

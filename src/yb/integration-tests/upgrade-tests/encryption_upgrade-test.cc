@@ -168,8 +168,7 @@ TEST_F(EncryptionUpgradeTest, UpgradeToAes256AndRollback) {
   ASSERT_EQ(ASSERT_RESULT(CountSstFiles(256, 256)), 0);
 
   // After the operator opts in, new files are AES-256 at both layers.
-  ASSERT_OK(cluster_->CallYbAdmin({"set_encryption_data_key_size",
-                                   AsString(encryption::EncryptionParams::kAes256KeySize)}));
+  ASSERT_OK(cluster_->CallYbAdmin({"set_encryption_algorithm", "AES_256_CTR"}));
   SleepFor(3s * kTimeMultiplier);
   ASSERT_OK(InsertRowsAndFlush());
   ASSERT_GT(ASSERT_RESULT(CountSstFiles(256, 256)), 0);
