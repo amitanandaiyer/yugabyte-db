@@ -59,10 +59,6 @@ constexpr uint32_t kNumFlushes = 8;
 constexpr uint32_t kNumCompactions = 2;
 constexpr uint32_t kKeySize = 100;
 constexpr uint32_t kCounterOverflowDefault = 0xFFFFFFE0;
-constexpr uint32_t kAes128UniverseKeySize =
-    encryption::EncryptionParams::kUniverseKeyPrefixSize + 16;
-constexpr uint32_t kAes256UniverseKeySize =
-    encryption::EncryptionParams::kUniverseKeyPrefixSize + 32;
 
 
 class EncryptionTest : public YBTableTestBase, public testing::WithParamInterface<bool> {
@@ -533,7 +529,7 @@ class EncryptionMigrationTest : public EncryptionTest {
   }
 
   void BeforeCreateTable() override {
-    ASSERT_NO_FATALS(AddUniverseKeys(kAes128UniverseKeySize));
+    ASSERT_NO_FATALS(AddUniverseKeys(encryption::ENCRYPTION_ALGORITHM_AES_128_CTR));
     ASSERT_NO_FATALS(RotateKey());
     SleepFor(MonoDelta::FromMilliseconds(2 * FLAGS_heartbeat_interval_ms));
   }
@@ -555,7 +551,7 @@ TEST_F_EX(EncryptionTest, MigrateFromAes128ToAes256, EncryptionMigrationTest) {
   // one at a time, then force a full compaction: the compaction rewrites every SST file under the
   // new keys, and its version edit is the first since the restart, so RocksDB also writes a new
   // MANIFEST and CURRENT.
-  ASSERT_NO_FATALS(AddUniverseKeys(kAes256UniverseKeySize));
+  ASSERT_NO_FATALS(AddUniverseKeys(encryption::ENCRYPTION_ALGORITHM_AES_256_CTR));
   ASSERT_NO_FATALS(RotateKey());
   // Rotating the universe key alone does not change the algorithm for new files.
   SleepFor(MonoDelta::FromMilliseconds(2 * FLAGS_heartbeat_interval_ms));

@@ -34,6 +34,8 @@ namespace yb::encryption {
 
 using Category = EncryptionKeyReportFileCategory;
 using FileType = EncryptionKeyReportFileType;
+constexpr auto kAes128 = ENCRYPTION_ALGORITHM_AES_128_CTR;
+constexpr auto kAes256 = ENCRYPTION_ALGORITHM_AES_256_CTR;
 
 class EncryptionKeyReportTest : public YBTest {
  protected:
@@ -45,9 +47,9 @@ class EncryptionKeyReportTest : public YBTest {
     root_ = GetTestPath("root");
   }
 
-  void WriteFile(Env* env, const std::string& relative_path, uint32_t data_key_size) {
+  void WriteFile(Env* env, const std::string& relative_path, EncryptionAlgorithmPB algorithm) {
     ANNOTATE_UNPROTECTED_WRITE(FLAGS_encryption_algorithm_override) =
-        data_key_size == 16 ? "AES_128_CTR" : "AES_256_CTR";
+        EncryptionAlgorithmName(algorithm);
     auto path = JoinPathSegments(root_, relative_path);
     ASSERT_OK(env_->CreateDirs(DirName(path)));
     // The encrypted Env only encrypts new files created through NewTempWritableFile.
@@ -66,15 +68,16 @@ class EncryptionKeyReportTest : public YBTest {
 };
 
 TEST_F(EncryptionKeyReportTest, GroupsByKeySizeAndCategory) {
-  ASSERT_NO_FATALS(WriteFile(encrypted_env_.get(), "data/rocksdb/tablet-1/000010.sst", 16));
-  ASSERT_NO_FATALS(WriteFile(encrypted_env_.get(), "data/rocksdb/tablet-1/000011.sst", 32));
-  ASSERT_NO_FATALS(WriteFile(encrypted_env_.get(), "data/rocksdb/tablet-1/000012.sst", 32));
-  ASSERT_NO_FATALS(WriteFile(encrypted_env_.get(), "data/rocksdb/tablet-1/MANIFEST-000005", 16));
+  ASSERT_NO_FATALS(WriteFile(encrypted_env_.get(), "data/rocksdb/tablet-1/000010.sst", kAes128));
+  ASSERT_NO_FATALS(WriteFile(encrypted_env_.get(), "data/rocksdb/tablet-1/000011.sst", kAes256));
+  ASSERT_NO_FATALS(WriteFile(encrypted_env_.get(), "data/rocksdb/tablet-1/000012.sst", kAes256));
+  ASSERT_NO_FATALS(
+      WriteFile(encrypted_env_.get(), "data/rocksdb/tablet-1/MANIFEST-000005", kAes128));
   ASSERT_NO_FATALS(WriteFile(
-      encrypted_env_.get(), "data/rocksdb/tablet-1.snapshots/s1/000010.sst", 16));
-  ASSERT_NO_FATALS(WriteFile(encrypted_env_.get(), "wals/table-1/tablet-1/wal-000001", 16));
-  ASSERT_NO_FATALS(WriteFile(encrypted_env_.get(), "tablet-meta/tablet-1", 32));
-  ASSERT_NO_FATALS(WriteFile(env_.get(), "plain", 16));
+      encrypted_env_.get(), "data/rocksdb/tablet-1.snapshots/s1/000010.sst", kAes128));
+  ASSERT_NO_FATALS(WriteFile(encrypted_env_.get(), "wals/table-1/tablet-1/wal-000001", kAes128));
+  ASSERT_NO_FATALS(WriteFile(encrypted_env_.get(), "tablet-meta/tablet-1", kAes256));
+  ASSERT_NO_FATALS(WriteFile(env_.get(), "plain", kAes128));
   ASSERT_OK(WriteStringToFile(env_.get(), Slice(), JoinPathSegments(root_, "empty")));
 
   auto universe_key_id = ASSERT_RESULT(universe_key_manager_->GetLatestUniverseParams()).version_id;
@@ -123,7 +126,7 @@ TEST_F(EncryptionKeyReportTest, GroupsByKeySizeAndCategory) {
 TEST_F(EncryptionKeyReportTest, MissingUniverseKey) {
   auto other_key_manager = tserver::GenerateTestUniverseKeyManager();
   auto other_env = NewEncryptedEnv(DefaultHeaderManager(other_key_manager.get()));
-  ASSERT_NO_FATALS(WriteFile(other_env.get(), "data/rocksdb/tablet-1/000010.sst", 16));
+  ASSERT_NO_FATALS(WriteFile(other_env.get(), "data/rocksdb/tablet-1/000010.sst", kAes128));
   auto other_key_id = ASSERT_RESULT(other_key_manager->GetLatestUniverseParams()).version_id;
 
   auto report = ASSERT_RESULT(CollectEncryptionKeyReport(

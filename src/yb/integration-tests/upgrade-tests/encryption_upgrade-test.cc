@@ -36,10 +36,6 @@ namespace yb {
 namespace {
 
 const MonoDelta kRpcTimeout = 5s * kTimeMultiplier;
-constexpr uint32_t kAes128UniverseKeySize =
-    encryption::EncryptionParams::kUniverseKeyPrefixSize + 16;
-constexpr uint32_t kAes256UniverseKeySize =
-    encryption::EncryptionParams::kUniverseKeyPrefixSize + 32;
 
 } // namespace
 
@@ -58,7 +54,7 @@ class EncryptionUpgradeTest : public UpgradeTestBase {
     }
 
     ASSERT_OK(StartClusterInOldVersion());
-    ASSERT_OK(AddAndRotateUniverseKey(kAes128UniverseKeySize));
+    ASSERT_OK(AddAndRotateUniverseKey(encryption::ENCRYPTION_ALGORITHM_AES_128_CTR));
     ASSERT_OK(CreateTable());
     ASSERT_OK(InsertRowsAndFlush());
   }
@@ -68,10 +64,11 @@ class EncryptionUpgradeTest : public UpgradeTestBase {
     opts.enable_ysql = false;
   }
 
-  Status AddAndRotateUniverseKey(size_t key_size) {
+  // Adds a universe key as strong as the data keys of algorithm and rotates to it.
+  Status AddAndRotateUniverseKey(encryption::EncryptionAlgorithmPB algorithm) {
     const auto key_id = RandomHumanReadableString(16);
     const auto key_path = GetTestPath(key_id);
-    auto key = RandomBytes(key_size);
+    auto key = RandomBytes(VERIFY_RESULT(encryption::UniverseKeySize(algorithm)));
     RETURN_NOT_OK(WriteStringToFile(Env::Default(), Slice(key.data(), key.size()), key_path));
     RETURN_NOT_OK(cluster_->CallYbAdmin({"add_universe_key_to_all_masters", key_id, key_path}));
     RETURN_NOT_OK(WaitFor(
@@ -162,7 +159,7 @@ TEST_F(EncryptionUpgradeTest, UpgradeToAes256AndRollback) {
   ASSERT_EQ(ASSERT_RESULT(CountSstFiles(256, 128)), 0);
 
   // Rotating to a 48-byte universe key changes only the wrapping layer.
-  ASSERT_OK(AddAndRotateUniverseKey(kAes256UniverseKeySize));
+  ASSERT_OK(AddAndRotateUniverseKey(encryption::ENCRYPTION_ALGORITHM_AES_256_CTR));
   ASSERT_OK(InsertRowsAndFlush());
   ASSERT_GT(ASSERT_RESULT(CountSstFiles(128, 256)), 0);
   ASSERT_EQ(ASSERT_RESULT(CountSstFiles(256, 256)), 0);

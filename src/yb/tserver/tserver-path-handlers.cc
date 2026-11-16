@@ -1819,11 +1819,11 @@ void TabletServerPathHandlers::HandleEncryptionKeyReportJSON(
   if (algorithm.ok()) {
     jw.String("encryption_algorithm_for_new_files");
     jw.String(encryption::EncryptionAlgorithmName(*algorithm));
-  }
-  auto data_key_size = universe_key_manager->GetDataKeySize();
-  if (data_key_size.ok()) {
-    jw.String("data_key_bits_for_new_files");
-    jw.Uint(*data_key_size * 8);
+    auto data_key_size = encryption::DataKeySize(*algorithm);
+    if (data_key_size.ok()) {
+      jw.String("data_key_bits_for_new_files");
+      jw.Uint(*data_key_size * 8);
+    }
   }
   auto latest = universe_key_manager->GetLatestUniverseParams();
   if (latest.ok()) {
