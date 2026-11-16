@@ -138,8 +138,8 @@ class HeaderManagerImpl : public HeaderManager {
     return universe_key_manager_->IsEncryptionEnabled();
   }
 
-  Result<uint32_t> GetDataKeySize() override {
-    return universe_key_manager_->GetDataKeySize();
+  Result<EncryptionAlgorithmPB> GetEncryptionAlgorithm() override {
+    return universe_key_manager_->GetEncryptionAlgorithm();
   }
 
  private:

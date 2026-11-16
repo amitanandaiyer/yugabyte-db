@@ -51,21 +51,17 @@ DEFINE_UNKNOWN_int64(encryption_counter_max, 0x7fffffffLL,
 TAG_FLAG(encryption_counter_max, advanced);
 TAG_FLAG(encryption_counter_max, hidden);
 
-// Readers take the key size from each file's header, so files written with either algorithm stay
-// readable by every release that supports encryption at rest.
+// Algorithm flags take an EncryptionAlgorithmPB value name without its ENCRYPTION_ALGORITHM_
+// prefix, so the enum is the only list of algorithms.
 DEFINE_RUNTIME_string(encryption_algorithm_override, "",
     "Overrides the encryption algorithm recorded in the universe key registry for files this "
-    "tserver writes: AES_128_CTR or AES_256_CTR. Empty uses the registry. For diagnostics only.");
-DEFINE_validator(encryption_algorithm_override,
-    FLAG_IN_SET_VALIDATOR("", "AES_128_CTR", "AES_256_CTR"));
+    "tserver writes, such as AES_256_CTR. Empty uses the registry. For diagnostics only.");
 TAG_FLAG(encryption_algorithm_override, advanced);
 
 DEFINE_RUNTIME_string(encryption_new_universe_algorithm, "AES_256_CTR",
     "Encryption algorithm recorded in the universe key registry when encryption at rest is "
-    "enabled for the first time: AES_256_CTR or AES_128_CTR. Universes that already enabled "
-    "encryption at rest keep their recorded algorithm.");
-DEFINE_validator(encryption_new_universe_algorithm,
-    FLAG_IN_SET_VALIDATOR("AES_128_CTR", "AES_256_CTR"));
+    "enabled for the first time, such as AES_256_CTR or AES_128_CTR. Universes that already "
+    "enabled encryption at rest keep their recorded algorithm.");
 TAG_FLAG(encryption_new_universe_algorithm, advanced);
 
 DEFINE_test_flag(bool, encryption_use_openssl_compatible_counter_overflow, true,
@@ -74,6 +70,24 @@ DEFINE_test_flag(bool, encryption_use_openssl_compatible_counter_overflow, true,
 
 namespace yb {
 namespace encryption {
+
+namespace {
+
+constexpr std::string_view kEncryptionAlgorithmPrefix = "ENCRYPTION_ALGORITHM_";
+
+bool ValidateEncryptionAlgorithmFlag(const char* flag_name, const std::string& value) {
+  if (value.empty() && flag_name == std::string_view("encryption_algorithm_override")) {
+    return true;
+  }
+  auto algorithm = ParseEncryptionAlgorithm(value);
+  if (!algorithm.ok()) {
+    LOG_FLAG_VALIDATION_ERROR(flag_name, value) << algorithm.status().message().ToBuffer();
+    return false;
+  }
+  return true;
+}
+
+} // namespace
 
 namespace {
 
@@ -115,8 +129,9 @@ Result<EncryptionParamsPtr> EncryptionParams::FromSlice(const Slice& s) {
   return params;
 }
 
-EncryptionParamsPtr EncryptionParams::NewEncryptionParams(uint32_t key_size) {
-  CHECK_OK(IsValidKeySize(key_size));
+Result<EncryptionParamsPtr> EncryptionParams::NewEncryptionParams(
+    EncryptionAlgorithmPB algorithm) {
+  const auto key_size = VERIFY_RESULT(DataKeySize(algorithm));
   auto encryption_params = std::make_unique<EncryptionParams>();
   RAND_bytes(encryption_params->key, key_size);
   RAND_bytes(encryption_params->nonce, kBlockSize - 4);
@@ -139,17 +154,29 @@ EncryptionParamsPtr EncryptionParams::NewEncryptionParams(uint32_t key_size) {
   return encryption_params;
 }
 
+std::vector<std::string> EncryptionAlgorithmNames() {
+  std::vector<std::string> names;
+  const auto* descriptor = EncryptionAlgorithmPB_descriptor();
+  for (int i = 0; i != descriptor->value_count(); ++i) {
+    names.push_back(EncryptionAlgorithmName(
+        static_cast<EncryptionAlgorithmPB>(descriptor->value(i)->number())));
+  }
+  return names;
+}
+
 Result<EncryptionAlgorithmPB> ParseEncryptionAlgorithm(const std::string& name) {
   EncryptionAlgorithmPB algorithm;
-  SCHECK(EncryptionAlgorithmPB_Parse("ENCRYPTION_ALGORITHM_" + name, &algorithm), InvalidArgument,
-         Format("Unknown encryption algorithm $0; expected AES_128_CTR or AES_256_CTR", name));
+  SCHECK(EncryptionAlgorithmPB_Parse(std::string(kEncryptionAlgorithmPrefix) + name, &algorithm),
+         InvalidArgument,
+         Format("Unknown encryption algorithm $0; expected one of $1", name,
+                EncryptionAlgorithmNames()));
   return algorithm;
 }
 
 std::string EncryptionAlgorithmName(EncryptionAlgorithmPB algorithm) {
-  constexpr std::string_view kPrefix = "ENCRYPTION_ALGORITHM_";
   const auto& name = EncryptionAlgorithmPB_Name(algorithm);
-  return name.starts_with(kPrefix) ? name.substr(kPrefix.size()) : std::to_string(algorithm);
+  return name.starts_with(kEncryptionAlgorithmPrefix)
+      ? name.substr(kEncryptionAlgorithmPrefix.size()) : std::to_string(algorithm);
 }
 
 Result<uint32_t> DataKeySize(EncryptionAlgorithmPB algorithm) {
@@ -169,10 +196,13 @@ Result<EncryptionAlgorithmPB> NewUniverseEncryptionAlgorithm() {
   return ParseEncryptionAlgorithm(FLAGS_encryption_new_universe_algorithm);
 }
 
+Result<uint32_t> UniverseKeySize(EncryptionAlgorithmPB algorithm) {
+  return EncryptionParams::kUniverseKeyPrefixSize + VERIFY_RESULT(DataKeySize(algorithm));
+}
+
 uint32_t DefaultUniverseKeySize() {
   // The flag validator only allows supported algorithms.
-  auto algorithm = CHECK_RESULT(NewUniverseEncryptionAlgorithm());
-  return EncryptionParams::kUniverseKeyPrefixSize + CHECK_RESULT(DataKeySize(algorithm));
+  return CHECK_RESULT(UniverseKeySize(CHECK_RESULT(NewUniverseEncryptionAlgorithm())));
 }
 
 Status EncryptionParams::IsValidKeySize(size_t size) {
@@ -243,3 +273,7 @@ Status CompleteCreateEncryptionInfoForWrite(const std::string& header,
 
 } // namespace encryption
 } // namespace yb
+
+DEFINE_validator(encryption_algorithm_override, &yb::encryption::ValidateEncryptionAlgorithmFlag);
+DEFINE_validator(encryption_new_universe_algorithm,
+                 &yb::encryption::ValidateEncryptionAlgorithmFlag);

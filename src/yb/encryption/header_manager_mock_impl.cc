@@ -71,8 +71,8 @@ Result<std::string> HeaderManagerMockImpl::GetLatestUniverseKeyId() {
   return universe_key_id_;
 }
 
-Result<uint32_t> HeaderManagerMockImpl::GetDataKeySize() {
-  return EncryptionParams::kAes256KeySize;
+Result<EncryptionAlgorithmPB> HeaderManagerMockImpl::GetEncryptionAlgorithm() {
+  return ENCRYPTION_ALGORITHM_AES_256_CTR;
 }
 } // namespace encryption
 } // namespace yb

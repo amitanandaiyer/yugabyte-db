@@ -17,6 +17,7 @@
 
 #include <cstdarg>
 #include <string>
+#include <vector>
 
 #include "yb/encryption/cipher_stream.h"
 #include "yb/encryption/encryption.pb.h"
@@ -69,8 +70,9 @@ struct EncryptionParams {
   // Given a slice, convert contents to encryption params. Used to read latest universe key.
   static Result<std::unique_ptr<EncryptionParams>> FromSlice(const Slice& s);
 
-  // Random key, nonce and counter. key_size must be 16, 24 or 32.
-  static std::unique_ptr<EncryptionParams> NewEncryptionParams(uint32_t key_size);
+  // Random key, nonce and counter, with the key size of algorithm.
+  static Result<std::unique_ptr<EncryptionParams>> NewEncryptionParams(
+      EncryptionAlgorithmPB algorithm);
 
   static Status IsValidKeySize(size_t size);
 
@@ -79,7 +81,9 @@ struct EncryptionParams {
 
 typedef std::unique_ptr<EncryptionParams> EncryptionParamsPtr;
 
-// Parses an algorithm name without its ENCRYPTION_ALGORITHM_ prefix, such as AES_256_CTR.
+// Algorithms are named by their EncryptionAlgorithmPB value without the ENCRYPTION_ALGORITHM_
+// prefix, such as AES_256_CTR.
+std::vector<std::string> EncryptionAlgorithmNames();
 Result<EncryptionAlgorithmPB> ParseEncryptionAlgorithm(const std::string& name);
 std::string EncryptionAlgorithmName(EncryptionAlgorithmPB algorithm);
 
@@ -89,7 +93,11 @@ Result<uint32_t> DataKeySize(EncryptionAlgorithmPB algorithm);
 // encryption_new_universe_algorithm.
 Result<EncryptionAlgorithmPB> NewUniverseEncryptionAlgorithm();
 
-// Size of a universe key blob whose AES key is as long as the data keys of a new universe.
+// Size of a universe key blob (nonce, counter and AES key) whose key is as long as the data keys
+// of algorithm.
+Result<uint32_t> UniverseKeySize(EncryptionAlgorithmPB algorithm);
+
+// UniverseKeySize for encryption_new_universe_algorithm.
 uint32_t DefaultUniverseKeySize();
 
 // Since this will typically be passed in by an external user (YW or yb-admin), UniverseKeyId
@@ -157,8 +165,8 @@ Status CreateEncryptionInfoForWrite(HeaderManager* header_manager,
                                     Writable* underlying_w,
                                     std::unique_ptr<BlockAccessCipherStream>* stream,
                                     uint32_t* header_size) {
-  auto encryption_params =
-      EncryptionParams::NewEncryptionParams(VERIFY_RESULT(header_manager->GetDataKeySize()));
+  auto algorithm = VERIFY_RESULT(header_manager->GetEncryptionAlgorithm());
+  auto encryption_params = VERIFY_RESULT(EncryptionParams::NewEncryptionParams(algorithm));
   std::string header = VERIFY_RESULT(
       header_manager->SerializeEncryptionParams(*encryption_params.get()));
   RETURN_NOT_OK(underlying_w->Append(header));

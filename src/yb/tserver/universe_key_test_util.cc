@@ -17,6 +17,7 @@
 #include "yb/encryption/universe_key_manager.h"
 
 #include "yb/util/random_util.h"
+#include "yb/util/status_log.h"
 
 namespace yb {
 namespace tserver {
@@ -24,8 +25,8 @@ namespace tserver {
 std::unique_ptr<encryption::UniverseKeyManager> GenerateTestUniverseKeyManager() {
   auto universe_key_manager = std::make_unique<encryption::UniverseKeyManager>();
   encryption::UniverseKeyRegistryPB registry;
-  auto encryption_params = encryption::EncryptionParams::NewEncryptionParams(
-      encryption::EncryptionParams::kAes256KeySize);
+  auto encryption_params = CHECK_RESULT(encryption::EncryptionParams::NewEncryptionParams(
+      encryption::ENCRYPTION_ALGORITHM_AES_256_CTR));
   encryption::EncryptionParamsPB params_pb;
   encryption_params->ToEncryptionParamsPB(&params_pb);
   auto version_id = RandomHumanReadableString(16);

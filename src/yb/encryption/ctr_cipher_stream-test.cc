@@ -28,6 +28,7 @@
 #include "yb/util/random_util.h"
 #include "yb/util/slice.h"
 #include "yb/util/status.h"
+#include "yb/util/status_log.h"
 #include "yb/util/test_macros.h"
 #include "yb/util/test_util.h"
 
@@ -45,7 +46,8 @@ class TestCipherStream : public YBTest {
     // Create a cipher stream on an iv about to overflow.
     ANNOTATE_UNPROTECTED_WRITE(FLAGS_TEST_encryption_use_openssl_compatible_counter_overflow) =
         use_openssl_compatible_counter_overflow;
-    auto params = EncryptionParams::NewEncryptionParams(EncryptionParams::kAes128KeySize);
+    auto params = VERIFY_RESULT(
+        EncryptionParams::NewEncryptionParams(ENCRYPTION_ALGORITHM_AES_128_CTR));
     // Initialize the nonce to be about to overflow for each position.
     uint8_t nonce[12];
     for (size_t i = 0; i < sizeof(nonce); i++) {
@@ -85,7 +87,8 @@ TEST_F(TestCipherStream, ConcurrentEncryption) {
   constexpr int kNumRuns = 10000;
   auto plaintext_bytes = RandomBytes(kBufSize);
   uint8_t encrypted_bytes[kBufSize];
-  auto encryption_params = EncryptionParams::NewEncryptionParams(EncryptionParams::kAes128KeySize);
+  auto encryption_params = ASSERT_RESULT(
+      EncryptionParams::NewEncryptionParams(ENCRYPTION_ALGORITHM_AES_128_CTR));
   auto cipher_stream  = ASSERT_RESULT(BlockAccessCipherStream::FromEncryptionParams(
       std::move(encryption_params)));
   ASSERT_OK(cipher_stream->Encrypt(0, Slice(plaintext_bytes.data(), kBufSize), encrypted_bytes));
@@ -109,7 +112,7 @@ TEST_F(TestCipherStream, ConcurrentEncryption) {
     threads.emplace_back([&]() {
       for (int i = 0; i < kNumRuns; i++) {
         // Do this to trigger use of openssl RAND_bytes
-        EncryptionParams::NewEncryptionParams(EncryptionParams::kAes128KeySize);
+        CHECK_RESULT(EncryptionParams::NewEncryptionParams(ENCRYPTION_ALGORITHM_AES_128_CTR));
         ASSERT_NO_FATALS(f(true /* encrypt */));
       }
     });
@@ -119,7 +122,7 @@ TEST_F(TestCipherStream, ConcurrentEncryption) {
   for (int i = 0; i < 20; i++) {
     threads.emplace_back([&]() {
       for (int i = 0; i < kNumRuns; i++) {
-        EncryptionParams::NewEncryptionParams(EncryptionParams::kAes128KeySize);
+        CHECK_RESULT(EncryptionParams::NewEncryptionParams(ENCRYPTION_ALGORITHM_AES_128_CTR));
         ASSERT_NO_FATALS(f(false /* encrypt */));
       }
     });
@@ -139,13 +142,14 @@ TEST_F(TestCipherStream, Overflow) {
   ASSERT_STR_CONTAINS(s.message().ToBuffer(), "Corrupted bytes starting");
 }
 
-TEST_F(TestCipherStream, DataKeySizes) {
+TEST_F(TestCipherStream, EncryptionAlgorithms) {
   rpc::InitOpenSSL();
 
   auto plaintext_bytes = RandomBytes(kDataSize);
-  for (auto key_size : {EncryptionParams::kAes128KeySize, EncryptionParams::kAes256KeySize}) {
-    auto params = EncryptionParams::NewEncryptionParams(key_size);
-    ASSERT_EQ(params->key_size, key_size);
+  for (const auto& name : EncryptionAlgorithmNames()) {
+    auto algorithm = ASSERT_RESULT(ParseEncryptionAlgorithm(name));
+    auto params = ASSERT_RESULT(EncryptionParams::NewEncryptionParams(algorithm));
+    ASSERT_EQ(params->key_size, ASSERT_RESULT(DataKeySize(algorithm)));
 
     auto cipher_stream = ASSERT_RESULT(BlockAccessCipherStream::FromEncryptionParams(
         std::move(params)));

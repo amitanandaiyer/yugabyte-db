@@ -118,9 +118,14 @@ class EncryptionTest : public YBTableTestBase, public testing::WithParamInterfac
     }
   }
 
-  void AddUniverseKeys(size_t key_bytes = encryption::DefaultUniverseKeySize()) {
+  void AddUniverseKeys() {
+    AddUniverseKeys(ASSERT_RESULT(encryption::NewUniverseEncryptionAlgorithm()));
+  }
+
+  // Adds a universe key as strong as the data keys of algorithm.
+  void AddUniverseKeys(encryption::EncryptionAlgorithmPB algorithm) {
     current_key_id_ = RandomHumanReadableString(16);
-    auto bytes = RandomBytes(key_bytes);
+    auto bytes = RandomBytes(ASSERT_RESULT(encryption::UniverseKeySize(algorithm)));
     ASSERT_OK(yb_admin_client_->AddUniverseKeyToAllMasters(
         current_key_id_, std::string(bytes.begin(), bytes.end())));
     current_key_ = bytes;

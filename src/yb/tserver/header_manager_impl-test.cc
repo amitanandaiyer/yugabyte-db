@@ -45,8 +45,9 @@ TEST_F(TestHeaderManagerImpl, FileOps) {
   auto header_manager =
       DefaultHeaderManager(universe_key_manger.get());
   using encryption::EncryptionParams;
-  for (auto key_size : {EncryptionParams::kAes128KeySize, EncryptionParams::kAes256KeySize}) {
-    auto params = EncryptionParams::NewEncryptionParams(key_size);
+  for (const auto& name : encryption::EncryptionAlgorithmNames()) {
+    auto params = ASSERT_RESULT(EncryptionParams::NewEncryptionParams(
+        ASSERT_RESULT(encryption::ParseEncryptionAlgorithm(name))));
     string header = ASSERT_RESULT(header_manager->SerializeEncryptionParams(*params.get()));
     auto start_idx = header_manager->GetEncryptionMetadataStartIndex();
     auto status = ASSERT_RESULT(header_manager->GetFileEncryptionStatusFromPrefix(
@@ -55,24 +56,27 @@ TEST_F(TestHeaderManagerImpl, FileOps) {
     Slice s = Slice(header.c_str() + start_idx, status.header_size);
     auto new_params =
         ASSERT_RESULT(header_manager->DecodeEncryptionParamsFromEncryptionMetadata(s));
-    ASSERT_EQ(new_params->key_size, key_size);
+    ASSERT_EQ(new_params->key_size, params->key_size);
     ASSERT_TRUE(params->Equals(*new_params.get()));
   }
 }
 
-TEST_F(TestHeaderManagerImpl, DataKeySize) {
+TEST_F(TestHeaderManagerImpl, EncryptionAlgorithm) {
   using encryption::EncryptionParams;
   // A registry without a recorded algorithm predates the field, so its universe stays on AES-128.
   auto key = RandomBytes(encryption::DefaultUniverseKeySize());
   auto legacy_manager = ASSERT_RESULT(encryption::UniverseKeyManager::FromKey(
       "legacy", Slice(key.data(), key.size())));
-  ASSERT_EQ(ASSERT_RESULT(legacy_manager->GetDataKeySize()), EncryptionParams::kAes128KeySize);
+  ASSERT_EQ(ASSERT_RESULT(legacy_manager->GetEncryptionAlgorithm()),
+            encryption::ENCRYPTION_ALGORITHM_AES_128_CTR);
 
   auto new_manager = GenerateTestUniverseKeyManager();
-  ASSERT_EQ(ASSERT_RESULT(new_manager->GetDataKeySize()), EncryptionParams::kAes256KeySize);
+  ASSERT_EQ(ASSERT_RESULT(new_manager->GetEncryptionAlgorithm()),
+            encryption::ENCRYPTION_ALGORITHM_AES_256_CTR);
 
   ANNOTATE_UNPROTECTED_WRITE(FLAGS_encryption_algorithm_override) = "AES_256_CTR";
-  ASSERT_EQ(ASSERT_RESULT(legacy_manager->GetDataKeySize()), EncryptionParams::kAes256KeySize);
+  ASSERT_EQ(ASSERT_RESULT(legacy_manager->GetEncryptionAlgorithm()),
+            encryption::ENCRYPTION_ALGORITHM_AES_256_CTR);
   ANNOTATE_UNPROTECTED_WRITE(FLAGS_encryption_algorithm_override) = "";
 
   // An algorithm this release does not support fails file creation instead of crashing the
@@ -85,7 +89,9 @@ TEST_F(TestHeaderManagerImpl, DataKeySize) {
   registry.set_encryption_algorithm(static_cast<encryption::EncryptionAlgorithmPB>(100));
   encryption::UniverseKeyManager bad_manager;
   bad_manager.SetUniverseKeyRegistry(registry);
-  ASSERT_NOK(bad_manager.GetDataKeySize());
+  auto header_manager = DefaultHeaderManager(&bad_manager);
+  auto algorithm = ASSERT_RESULT(header_manager->GetEncryptionAlgorithm());
+  ASSERT_NOK(EncryptionParams::NewEncryptionParams(algorithm));
 }
 
 } // namespace yb

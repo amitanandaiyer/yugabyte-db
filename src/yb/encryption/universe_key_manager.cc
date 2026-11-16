@@ -81,11 +81,6 @@ Result<EncryptionAlgorithmPB> UniverseKeyManager::GetEncryptionAlgorithm() {
   return universe_key_registry_.encryption_algorithm();
 }
 
-Result<uint32_t> UniverseKeyManager::GetDataKeySize() {
-  // The algorithm comes from the master. An algorithm this release does not support fails the file
-  // write instead of crashing in NewEncryptionParams.
-  return DataKeySize(VERIFY_RESULT(GetEncryptionAlgorithm()));
-}
 
 Result<bool> UniverseKeyManager::IsEncryptionEnabled() {
   std::lock_guard l(mutex_);
