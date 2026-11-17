@@ -41,15 +41,14 @@ class EncryptionKeyReportTest : public YBTest {
  protected:
   void SetUp() override {
     YBTest::SetUp();
-    ANNOTATE_UNPROTECTED_WRITE(FLAGS_encryption_algorithm_override) = "AES_256_CTR";
+    ASSERT_OK(SET_FLAG(encryption_algorithm_override, "AES_256_CTR"));
     universe_key_manager_ = tserver::GenerateTestUniverseKeyManager();
     encrypted_env_ = NewEncryptedEnv(DefaultHeaderManager(universe_key_manager_.get()));
     root_ = GetTestPath("root");
   }
 
   void WriteFile(Env* env, const std::string& relative_path, EncryptionAlgorithmPB algorithm) {
-    ANNOTATE_UNPROTECTED_WRITE(FLAGS_encryption_algorithm_override) =
-        EncryptionAlgorithmName(algorithm);
+    ASSERT_OK(SET_FLAG(encryption_algorithm_override, EncryptionAlgorithmName(algorithm)));
     auto path = JoinPathSegments(root_, relative_path);
     ASSERT_OK(env_->CreateDirs(DirName(path)));
     // The encrypted Env only encrypts new files created through NewTempWritableFile.
