@@ -18,8 +18,6 @@
 
 #include "yb/util/debug-util.h"
 
-DECLARE_string(encryption_algorithm_override);
-
 namespace yb {
 namespace encryption {
 
@@ -73,8 +71,8 @@ Result<UniverseKeyParams> UniverseKeyManager::GetLatestUniverseParams() {
 }
 
 Result<EncryptionAlgorithmPB> UniverseKeyManager::GetEncryptionAlgorithm() {
-  if (auto override_name = FLAGS_encryption_algorithm_override; !override_name.empty()) {
-    return ParseEncryptionAlgorithm(override_name);
+  if (auto algorithm = EncryptionAlgorithmOverride()) {
+    return *algorithm;
   }
   std::lock_guard l(mutex_);
   SCHECK(received_universe_key_registry_, IllegalState, "Universe key registry not received");

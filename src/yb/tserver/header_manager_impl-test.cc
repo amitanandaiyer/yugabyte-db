@@ -74,10 +74,10 @@ TEST_F(TestHeaderManagerImpl, EncryptionAlgorithm) {
   ASSERT_EQ(ASSERT_RESULT(new_manager->GetEncryptionAlgorithm()),
             encryption::ENCRYPTION_ALGORITHM_AES_256_CTR);
 
-  ANNOTATE_UNPROTECTED_WRITE(FLAGS_encryption_algorithm_override) = "AES_256_CTR";
+  ASSERT_OK(SET_FLAG(encryption_algorithm_override, "AES_256_CTR"));
   ASSERT_EQ(ASSERT_RESULT(legacy_manager->GetEncryptionAlgorithm()),
             encryption::ENCRYPTION_ALGORITHM_AES_256_CTR);
-  ANNOTATE_UNPROTECTED_WRITE(FLAGS_encryption_algorithm_override) = "";
+  ASSERT_OK(SET_FLAG(encryption_algorithm_override, ""));
 
   // An algorithm this release does not support fails file creation instead of crashing the
   // tserver.

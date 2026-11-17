@@ -16,6 +16,7 @@
 #include <stdint.h>
 
 #include <cstdarg>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -92,6 +93,12 @@ Result<uint32_t> DataKeySize(EncryptionAlgorithmPB algorithm);
 
 // encryption_new_universe_algorithm.
 Result<EncryptionAlgorithmPB> NewUniverseEncryptionAlgorithm();
+
+// encryption_algorithm_override, or std::nullopt when it is empty.
+std::optional<EncryptionAlgorithmPB> EncryptionAlgorithmOverride();
+
+// Flag callback of both algorithm flags.
+void ReloadEncryptionAlgorithmFlags();
 
 // Size of a universe key blob (nonce, counter and AES key) whose key is as long as the data keys
 // of algorithm.

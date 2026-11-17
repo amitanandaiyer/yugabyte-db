@@ -31,6 +31,7 @@
 #include "yb/util/atomic.h"
 #include "yb/util/flag_validators.h"
 #include "yb/util/flags.h"
+#include "yb/util/flags/flags_callback.h"
 #include "yb/util/logging.h"
 #include "yb/util/random_util.h"
 #include "yb/util/status_format.h"
@@ -192,8 +193,70 @@ Result<uint32_t> DataKeySize(EncryptionAlgorithmPB algorithm) {
   }
 }
 
+namespace {
+
+// A runtime string flag can't be read through FLAGS_ while set_flag may assign it, and
+// GetCommandLineOption takes the gflags registry lock, too costly on every file creation. So each
+// algorithm flag is parsed into an atomic by its flag callback, or on first use if no callback has
+// run yet.
+class AlgorithmFlag {
+ public:
+  explicit AlgorithmFlag(const char* flag_name) : flag_name_(flag_name) {}
+
+  void Reload() { value_.store(Read(), std::memory_order_release); }
+
+  // Returns std::nullopt when the flag is empty.
+  std::optional<EncryptionAlgorithmPB> Get() {
+    auto value = value_.load(std::memory_order_acquire);
+    if (value == kUnloaded) {
+      // A concurrent Reload's value wins over this one.
+      value_.compare_exchange_strong(value, Read(), std::memory_order_acq_rel);
+      value = value_.load(std::memory_order_acquire);
+    }
+    if (value == kEmpty) {
+      return std::nullopt;
+    }
+    return static_cast<EncryptionAlgorithmPB>(value);
+  }
+
+ private:
+  static constexpr int kUnloaded = -2;
+  static constexpr int kEmpty = -1;
+
+  int Read() const {
+    std::string value;
+    CHECK(google::GetCommandLineOption(flag_name_, &value)) << flag_name_;
+    if (value.empty()) {
+      return kEmpty;
+    }
+    // The flag validator only allows supported algorithms.
+    return CHECK_RESULT(ParseEncryptionAlgorithm(value));
+  }
+
+  const char* const flag_name_;
+  std::atomic<int> value_{kUnloaded};
+};
+
+AlgorithmFlag& NewUniverseAlgorithmFlag() {
+  static AlgorithmFlag flag("encryption_new_universe_algorithm");
+  return flag;
+}
+
+AlgorithmFlag& AlgorithmOverrideFlag() {
+  static AlgorithmFlag flag("encryption_algorithm_override");
+  return flag;
+}
+
+} // namespace
+
 Result<EncryptionAlgorithmPB> NewUniverseEncryptionAlgorithm() {
-  return ParseEncryptionAlgorithm(FLAGS_encryption_new_universe_algorithm);
+  auto algorithm = NewUniverseAlgorithmFlag().Get();
+  SCHECK(algorithm, IllegalState, "encryption_new_universe_algorithm is empty");
+  return *algorithm;
+}
+
+std::optional<EncryptionAlgorithmPB> EncryptionAlgorithmOverride() {
+  return AlgorithmOverrideFlag().Get();
 }
 
 Result<uint32_t> UniverseKeySize(EncryptionAlgorithmPB algorithm) {
@@ -271,9 +334,19 @@ Status CompleteCreateEncryptionInfoForWrite(const std::string& header,
   return Status::OK();
 }
 
+void ReloadEncryptionAlgorithmFlags() {
+  NewUniverseAlgorithmFlag().Reload();
+  AlgorithmOverrideFlag().Reload();
+}
+
 } // namespace encryption
 } // namespace yb
 
 DEFINE_validator(encryption_algorithm_override, &yb::encryption::ValidateEncryptionAlgorithmFlag);
 DEFINE_validator(encryption_new_universe_algorithm,
                  &yb::encryption::ValidateEncryptionAlgorithmFlag);
+
+REGISTER_CALLBACK(encryption_new_universe_algorithm, "Reload encryption algorithm flags",
+                  &yb::encryption::ReloadEncryptionAlgorithmFlags);
+REGISTER_CALLBACK(encryption_algorithm_override, "Reload encryption algorithm flags",
+                  &yb::encryption::ReloadEncryptionAlgorithmFlags);
