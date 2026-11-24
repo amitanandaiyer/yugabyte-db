@@ -43,6 +43,7 @@ message UniverseKeyRegistryPB {
   bool encryption_enabled = 1;
   map<string, EncryptionParamsPB> universe_keys = 2;
   string latest_version_id = 3;
-  // Set when encryption at rest is first enabled, and changed only by an operator.
-  EncryptionAlgorithmPB encryption_algorithm = 4;
+  // Set when encryption at rest is first enabled, and changed only by an operator. Unset in a
+  // registry that enabled encryption at rest before this field existed, which reads as AES-128.
+  optional EncryptionAlgorithmPB encryption_algorithm = 4;
 }

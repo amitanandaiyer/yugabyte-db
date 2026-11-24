@@ -27,7 +27,6 @@
 
 using std::string;
 
-
 namespace yb {
 namespace master {
 
