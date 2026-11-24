@@ -2007,7 +2007,7 @@ yb-admin \
 
 #### set_encryption_algorithm
 
-Sets the encryption algorithm for newly written data files. With `AES_256_CTR`, new data files use 256-bit (AES-256) data keys. Existing files keep their keys until compaction rewrites them. Encryption at rest must be enabled.
+Sets the encryption algorithm for newly written data files. With `AES_256_CTR`, new data files use 256-bit (AES-256) data keys. Existing files keep their keys until compaction rewrites them. Encryption at rest must be enabled, and any upgrade of the cluster must be finalized.
 
 Clusters that enable encryption at rest for the first time already use `AES_256_CTR`. Use this command to [migrate a cluster](../../secure/encryption-at-rest/#migrate-an-existing-cluster-to-aes-256) that enabled encryption at rest earlier.
 

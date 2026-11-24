@@ -1815,8 +1815,9 @@ void TabletServerPathHandlers::HandleEncryptionKeyReportJSON(
   }
 
   jw.StartObject();
+  auto encryption_enabled = universe_key_manager->IsEncryptionEnabled();
   auto algorithm = universe_key_manager->GetEncryptionAlgorithm();
-  if (algorithm.ok()) {
+  if (encryption_enabled.ok() && *encryption_enabled && algorithm.ok()) {
     jw.String("encryption_algorithm_for_new_files");
     jw.String(encryption::EncryptionAlgorithmName(*algorithm));
     auto data_key_size = encryption::DataKeySize(*algorithm);

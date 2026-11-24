@@ -126,7 +126,7 @@ You can rotate the new key as follows:
 
 ## Migrate an existing cluster to AES-256
 
-Clusters that enabled encryption at rest before AES-256 became the default, or with a 32-byte universe key, have data protected by 128-bit keys. They remain supported. You can move such a cluster to AES-256 in place, without downtime, as follows:
+Clusters that enabled encryption at rest before AES-256 became the default, or with a 32-byte universe key, have data protected by 128-bit keys. They remain supported. You can move such a cluster to AES-256 in place, without downtime, as follows. If you are upgrading the cluster, finalize the upgrade first.
 
 1. Rotate to a 48-byte universe key by following the steps in [Rotate new key](#rotate-new-key).
 
