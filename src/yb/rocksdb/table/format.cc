@@ -38,6 +38,7 @@
 #include "yb/util/debug-util.h"
 #include "yb/util/env.h"
 #include "yb/util/mem_tracker.h"
+#include "yb/util/record_cipher.h"
 #include "yb/util/result.h"
 #include "yb/util/stats/perf_step_timer.h"
 #include "yb/util/status_format.h"
@@ -243,33 +244,62 @@ Status CheckSSTableFileSize(RandomAccessFileReader* file, uint64_t file_size) {
   return Status::OK();
 }
 
+void EncodeBlockRecordAad(uint64_t offset, char compression_type, char* aad) {
+  EncodeFixed64(aad, offset);
+  aad[sizeof(uint64_t)] = compression_type;
+}
+
 Status ReadFooterFromFile(
     RandomAccessFileReader* file, uint64_t file_size, Footer* footer,
     uint64_t enforce_table_magic_number) {
   RETURN_NOT_OK(CheckSSTableFileSize(file, file_size));
 
-  char footer_space[Footer::kMaxEncodedLength];
+  // With record-level encryption the footer is followed by a seal that authenticates it; see
+  // BlockBasedTableBuilder::Finish.
+  const auto* cipher = file->file()->record_cipher();
+  const size_t seal_size = cipher ? cipher->Overhead() : 0;
+  constexpr size_t kMaxReadSize = Footer::kMaxEncodedLength + 64;
+  SCHECK_LE(Footer::kMaxEncodedLength + seal_size, kMaxReadSize, IllegalState,
+            "Record cipher overhead too large");
+  char footer_space[kMaxReadSize];
   Slice footer_input;
+  const size_t max_read = Footer::kMaxEncodedLength + seal_size;
   size_t read_offset =
-      (file_size > Footer::kMaxEncodedLength)
-          ? static_cast<size_t>(file_size - Footer::kMaxEncodedLength)
-          : 0;
-  const size_t read_size = std::min<size_t>(Footer::kMaxEncodedLength, file_size);
+      (file_size > max_read) ? static_cast<size_t>(file_size - max_read) : 0;
+  const size_t read_size = std::min<size_t>(max_read, file_size);
   struct FooterValidator : public yb::ReadValidator {
     FooterValidator(RandomAccessFileReader* file_,
                     Footer* footer_,
-                    uint64_t enforce_table_magic_number_)
+                    uint64_t enforce_table_magic_number_,
+                    const yb::RecordCipher* cipher_,
+                    uint64_t file_size_)
         : file(file_),
           footer(footer_),
-          enforce_table_magic_number(enforce_table_magic_number_) {}
+          enforce_table_magic_number(enforce_table_magic_number_),
+          cipher(cipher_),
+          file_size(file_size_) {}
 
     Status Validate(const Slice& read_result) const override {
       // Check that we actually read the whole footer from the file. It may be that size isn't
       // correct.
       RETURN_NOT_OK(CheckSSTableFileSize(file, read_result.size()));
       Slice mutable_read_result(read_result);
+      Slice seal;
+      if (cipher) {
+        SCHECK_GE(mutable_read_result.size(), cipher->Overhead(), Corruption,
+                  Format("$0: file too short for footer seal", file->file()->filename()));
+        seal = mutable_read_result.Suffix(cipher->Overhead());
+        mutable_read_result.remove_suffix(cipher->Overhead());
+      }
       *footer = Footer();
       RETURN_NOT_OK(footer->DecodeFrom(&mutable_read_result));
+      if (cipher) {
+        std::string encoded;
+        footer->AppendEncodedTo(&encoded);
+        RETURN_NOT_OK_PREPEND(
+            cipher->Open(file_size - cipher->Overhead(), encoded, seal, nullptr),
+            Format("$0: footer authentication failed", file->file()->filename()));
+      }
       if (enforce_table_magic_number != 0 &&
           enforce_table_magic_number != footer->table_magic_number()) {
         return STATUS_FORMAT(
@@ -282,7 +312,9 @@ Status ReadFooterFromFile(
     RandomAccessFileReader* file;
     Footer* const footer;
     const uint64_t enforce_table_magic_number;
-  } validator(file, footer, enforce_table_magic_number);
+    const yb::RecordCipher* const cipher;
+    const uint64_t file_size;
+  } validator(file, footer, enforce_table_magic_number, cipher, file_size);
 
   return file->ReadAndValidate(read_offset, read_size, &footer_input, footer_space, validator);
 }
@@ -470,6 +502,27 @@ Status ReadBlockContents(RandomAccessFileReader* file, const Footer& footer,
   PERF_TIMER_GUARD(block_decompress_time);
 
   compression_type = static_cast<rocksdb::CompressionType>(slice.data()[n]);
+
+  if (const auto* cipher = file->file()->record_cipher()) {
+    SCHECK_GE(n, cipher->Overhead(), Corruption,
+              Format("$0: sealed block $1 is too short", file->file()->filename(),
+                     handle.ToDebugString()));
+    const size_t plain_size = n - cipher->Overhead();
+    // Keep room for the trailer, which the code below reads the compression type from.
+    auto plain = std::unique_ptr<char[]>(new char[plain_size + kBlockTrailerSize]);
+    char aad[kBlockRecordAadSize];
+    EncodeBlockRecordAad(handle.offset(), compression_type, aad);
+    RETURN_NOT_OK_PREPEND(
+        cipher->Open(
+            handle.offset(), Slice(aad, sizeof(aad)), Slice(slice.data(), n),
+            reinterpret_cast<uint8_t*>(plain.get())),
+        Format("$0: block $1", file->file()->filename(), handle.ToDebugString()));
+    plain[plain_size] = compression_type;
+    heap_buf = std::move(plain);
+    used_buf = heap_buf.get();
+    n = plain_size;
+    slice = Slice(used_buf, n + kBlockTrailerSize);
+  }
 
   if (decompression_requested && compression_type != kNoCompression) {
     return UncompressBlockContents(slice.cdata(), n, contents, footer.version(), mem_tracker);

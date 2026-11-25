@@ -16,7 +16,10 @@
 #include "yb/encryption/cipher_stream.h"
 #include "yb/encryption/encrypted_file.h"
 #include "yb/encryption/encryption_util.h"
+#include "yb/encryption/gcm_encrypted_file.h"
 #include "yb/encryption/header_manager.h"
+
+#include "yb/util/path_util.h"
 
 namespace yb {
 
@@ -28,15 +31,20 @@ class EncryptedSequentialFile : public SequentialFileWrapper {
                        std::unique_ptr<rocksdb::SequentialFile> underlying_seq,
                        std::unique_ptr<rocksdb::RandomAccessFile> underlying_ra) {
     result->reset();
-    std::unique_ptr<encryption::BlockAccessCipherStream> stream;
-    uint32_t header_size;
-
-    const auto file_encrypted = VERIFY_RESULT(encryption::GetEncryptionInfoFromFile<uint8_t>(
-        header_manager, underlying_ra.get(), &stream, &header_size));
-    if (!file_encrypted) {
+    auto header = VERIFY_RESULT(encryption::ReadFileEncryptionHeader<uint8_t>(
+        header_manager, underlying_ra.get()));
+    if (!header) {
       *result = std::move(underlying_seq);
       return Status::OK();
     }
+    if (header->params->cipher_mode != encryption::CipherMode::kCtr) {
+      *result = std::make_unique<encryption::GcmSequentialFile>(VERIFY_RESULT(
+          encryption::NewGcmRandomAccessFile(std::move(underlying_ra), *header)));
+      return Status::OK();
+    }
+    const auto header_size = header->header_size;
+    auto stream = VERIFY_RESULT(encryption::BlockAccessCipherStream::FromEncryptionParams(
+        std::move(header->params)));
 
     RETURN_NOT_OK(underlying_seq->Skip(header_size));
     *result = std::make_unique<EncryptedSequentialFile>(
@@ -79,9 +87,10 @@ class RocksDBEncryptedWritableFile : public rocksdb::WritableFileWrapper {
  public:
   static Status Create(std::unique_ptr<rocksdb::WritableFile>* result,
                        encryption::HeaderManager* header_manager,
-                       std::unique_ptr<rocksdb::WritableFile> underlying) {
+                       std::unique_ptr<rocksdb::WritableFile> underlying,
+                       encryption::GcmFileLayout gcm_layout) {
     return encryption::CreateWritableFile<RocksDBEncryptedWritableFile>(
-        result, header_manager, std::move(underlying));
+        result, header_manager, std::move(underlying), gcm_layout);
   }
 
   // Default constructor.
@@ -106,6 +115,20 @@ class RocksDBEncryptedWritableFile : public rocksdb::WritableFileWrapper {
   std::unique_ptr<encryption::BlockAccessCipherStream> stream_;
   uint32_t header_size_;
 };
+
+// SST files are sealed block by block by BlockBasedTableBuilder, and are never rewritten. The
+// MANIFEST is appended to for the life of the DB and read back after a crash, so it can end without
+// a final chunk. Every other RocksDB file is written in full and closed.
+encryption::GcmFileLayout GcmLayoutForFile(const std::string& fname) {
+  const auto base_name = BaseName(fname);
+  if (base_name.ends_with(".sst") || base_name.find(".sblock.") != std::string::npos) {
+    return encryption::GcmFileLayout::kWriteOnceRecords;
+  }
+  if (base_name.starts_with("MANIFEST-")) {
+    return encryption::GcmFileLayout::kChunksWithUnauthenticatedTail;
+  }
+  return encryption::GcmFileLayout::kChunks;
+}
 
 // EncryptedEnv implements an Env wrapper that adds encryption to files stored on disk.
 class RocksDBEncryptedFileFactory : public rocksdb::RocksDBFileFactoryWrapper {
@@ -135,7 +158,7 @@ class RocksDBEncryptedFileFactory : public rocksdb::RocksDBFileFactoryWrapper {
     std::unique_ptr<rocksdb::WritableFile> underlying;
     RETURN_NOT_OK(RocksDBFileFactoryWrapper::NewWritableFile(fname, &underlying, options));
     return RocksDBEncryptedWritableFile::Create(
-        result, header_manager_.get(), std::move(underlying));
+        result, header_manager_.get(), std::move(underlying), GcmLayoutForFile(fname));
   }
 
   Status NewSequentialFile(const std::string& fname,
@@ -153,13 +176,10 @@ class RocksDBEncryptedFileFactory : public rocksdb::RocksDBFileFactoryWrapper {
   }
 
   Status GetFileSize(const std::string& fname, uint64_t* size) override {
-    RETURN_NOT_OK(RocksDBFileFactoryWrapper::GetFileSize(fname, size));
-    // Determine if file is encrypted.
-    std::unique_ptr<rocksdb::SequentialFile> underlying;
-    RETURN_NOT_OK(RocksDBFileFactoryWrapper::NewSequentialFile(
-        fname, &underlying, rocksdb::EnvOptions()));
-
-    *size -= VERIFY_RESULT(encryption::GetHeaderSize(underlying.get(), header_manager_.get()));
+    // The plaintext size of an AES-GCM file depends on its chunk layout, so ask the file.
+    std::unique_ptr<rocksdb::RandomAccessFile> file;
+    RETURN_NOT_OK(NewRandomAccessFile(fname, &file, rocksdb::EnvOptions()));
+    *size = VERIFY_RESULT(file->Size());
     return Status::OK();
   }
 

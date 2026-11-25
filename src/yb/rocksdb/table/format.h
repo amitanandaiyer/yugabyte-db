@@ -211,6 +211,12 @@ Status ReadFooterFromFile(RandomAccessFileReader* file, uint64_t file_size,
 // 1-byte type + 32-bit crc
 static const size_t kBlockTrailerSize = 5;
 
+// With record-level encryption (yb::RecordCipher), a block is stored sealed: the block handle and
+// the trailer's checksum cover the sealed bytes. The block's offset and compression type are bound
+// in as additional authenticated data, so a block cannot be moved or have its type changed.
+static const size_t kBlockRecordAadSize = sizeof(uint64_t) + 1;
+void EncodeBlockRecordAad(uint64_t offset, char compression_type, char* aad);
+
 class TrackedAllocation {
  public:
   TrackedAllocation();
