@@ -535,6 +535,8 @@ class WritableLogSegment {
   int64_t first_entry_offset_;
 
   faststring index_block_header_buffer_;
+  // Reused for sealing entry batches with AES-GCM; see WriteEntryBatch.
+  faststring sealed_record_buffer_;
 
   DISALLOW_COPY_AND_ASSIGN(WritableLogSegment);
 };
