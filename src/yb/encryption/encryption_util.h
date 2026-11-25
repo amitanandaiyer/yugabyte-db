@@ -22,6 +22,7 @@
 
 #include "yb/encryption/cipher_stream.h"
 #include "yb/encryption/encryption.pb.h"
+#include "yb/encryption/encryption_fwd.h"
 #include "yb/encryption/header_manager.h"
 
 #include "yb/util/status_fwd.h"
@@ -33,7 +34,6 @@ namespace yb {
 namespace encryption {
 
 class EncryptionParamsPB;
-class RandomAccessFile;
 class HeaderManager;
 class BlockAccessCipherStream;
 
@@ -63,6 +63,13 @@ struct EncryptionParams {
   // initialization vector as part of the new format.
   bool openssl_compatible_counter_overflow;
 
+  CipherMode cipher_mode = CipherMode::kCtr;
+  // The following apply to kGcm only; see EncryptionParamsPB.
+  uint32_t gcm_chunk_size = 0;
+  bool allow_unauthenticated_tail = false;
+  // kGcmRecord only; see EncryptionParamsPB.
+  bool record_nonce_stored = false;
+
   void ToEncryptionParamsPB(EncryptionParamsPB* encryption_header) const;
 
   static Result<std::unique_ptr<EncryptionParams>> FromEncryptionParamsPB(
@@ -71,9 +78,11 @@ struct EncryptionParams {
   // Given a slice, convert contents to encryption params. Used to read latest universe key.
   static Result<std::unique_ptr<EncryptionParams>> FromSlice(const Slice& s);
 
-  // Random key, nonce and counter, with the key size of algorithm.
+  // Random key, nonce and counter, with the key size and cipher of algorithm. For AES-GCM,
+  // gcm_layout picks how the file is sealed, and chunked files take their chunk size from
+  // encryption_gcm_chunk_size_bytes.
   static Result<std::unique_ptr<EncryptionParams>> NewEncryptionParams(
-      EncryptionAlgorithmPB algorithm);
+      EncryptionAlgorithmPB algorithm, GcmFileLayout gcm_layout = GcmFileLayout::kChunks);
 
   static Status IsValidKeySize(size_t size);
 
@@ -90,6 +99,12 @@ std::string EncryptionAlgorithmName(EncryptionAlgorithmPB algorithm);
 
 // Size of the data keys of new files encrypted with algorithm.
 Result<uint32_t> DataKeySize(EncryptionAlgorithmPB algorithm);
+
+// kCtr or kGcm. NotSupported for a value this release does not know.
+Result<CipherMode> AlgorithmCipherMode(EncryptionAlgorithmPB algorithm);
+
+// The CTR algorithm with the same key size as algorithm.
+Result<EncryptionAlgorithmPB> CtrAlgorithmWithKeySizeOf(EncryptionAlgorithmPB algorithm);
 
 // encryption_new_universe_algorithm.
 Result<EncryptionAlgorithmPB> NewUniverseEncryptionAlgorithm();
@@ -128,13 +143,19 @@ class EncryptionBuffer {
 };
 
 
-// Given a readable file, generate a cipher stream and header size for that file.
+struct FileEncryptionHeader {
+  EncryptionParamsPtr params;
+  uint32_t header_size;
+  UniverseKeyId universe_key_id;
+};
+
+// Reads and decodes a file's encryption header. Returns nullopt if the file is not encrypted.
+// universe_key_id, if given, is set as soon as the header names its universe key, so a caller can
+// tell which key is missing when decoding the data key fails.
 template <typename BufType, typename Readable>
-Result<bool> GetEncryptionInfoFromFile(HeaderManager* header_manager,
-                                       Readable* underlying_r,
-                                       std::unique_ptr<BlockAccessCipherStream>* stream,
-                                       uint32_t* header_size,
-                                       std::string* universe_key_id = nullptr) {
+Result<std::optional<FileEncryptionHeader>> ReadFileEncryptionHeader(
+    HeaderManager* header_manager, Readable* underlying_r,
+    std::string* universe_key_id = nullptr) {
   if (!header_manager) {
     return STATUS(InvalidArgument, "header_manager must be non-null.");
   }
@@ -146,21 +167,56 @@ Result<bool> GetEncryptionInfoFromFile(HeaderManager* header_manager,
   auto encryption_status = VERIFY_RESULT(
       header_manager->GetFileEncryptionStatusFromPrefix(encryption_info));
   if (!encryption_status.is_encrypted) {
-    return false;
+    return std::nullopt;
   }
 
-  *header_size = metadata_start + encryption_status.header_size;
-  buf = std::unique_ptr<BufType[]>(new BufType[*header_size]);
+  FileEncryptionHeader header;
+  header.header_size = metadata_start + encryption_status.header_size;
+  buf = std::unique_ptr<BufType[]>(new BufType[header.header_size]);
   RETURN_NOT_OK(underlying_r->Read(
       metadata_start, encryption_status.header_size, &encryption_info, buf.get()));
-  auto encryption_params = VERIFY_RESULT(
-      header_manager->DecodeEncryptionParamsFromEncryptionMetadata(
-          encryption_info, universe_key_id));
+  auto params = header_manager->DecodeEncryptionParamsFromEncryptionMetadata(
+      encryption_info, &header.universe_key_id);
+  if (universe_key_id) {
+    *universe_key_id = header.universe_key_id;
+  }
+  header.params = VERIFY_RESULT(std::move(params));
+  return header;
+}
 
-  *stream = std::make_unique<BlockAccessCipherStream>(std::move(encryption_params));
+// Given a readable CTR-encrypted file, generate a cipher stream and header size for that file.
+// Returns NotSupported for a GCM file, which must be read through NewGcmRandomAccessFile.
+template <typename BufType, typename Readable>
+Result<bool> GetEncryptionInfoFromFile(HeaderManager* header_manager,
+                                       Readable* underlying_r,
+                                       std::unique_ptr<BlockAccessCipherStream>* stream,
+                                       uint32_t* header_size,
+                                       std::string* universe_key_id = nullptr) {
+  auto header = VERIFY_RESULT(ReadFileEncryptionHeader<BufType>(
+      header_manager, underlying_r, universe_key_id));
+  if (!header) {
+    return false;
+  }
+  SCHECK(header->params->cipher_mode == CipherMode::kCtr, NotSupported,
+         "File is encrypted with AES-GCM");
+  *header_size = header->header_size;
+  *stream = std::make_unique<BlockAccessCipherStream>(std::move(header->params));
   RETURN_NOT_OK((*stream)->Init());
   return true;
 }
+
+// Defined in gcm_encrypted_file.cc. Both handle chunked (kGcm) and record (kGcmRecord) files.
+Result<std::unique_ptr<yb::RandomAccessFile>> NewGcmRandomAccessFile(
+    std::unique_ptr<yb::RandomAccessFile> underlying, const FileEncryptionHeader& header);
+// Writes header to underlying and returns a file that encrypts what is appended to it, or, for
+// kGcmRecord, that exposes the record cipher to the writer.
+Result<std::unique_ptr<yb::WritableFile>> NewGcmWritableFile(
+    std::unique_ptr<yb::WritableFile> underlying, const EncryptionParams& params,
+    const std::string& header);
+// Continues appending to a kGcmRecord file. underlying must be positioned after the existing
+// contents, header included.
+Result<std::unique_ptr<yb::WritableFile>> ReopenGcmRecordWritableFile(
+    std::unique_ptr<yb::WritableFile> underlying, const FileEncryptionHeader& header);
 
 Status CompleteCreateEncryptionInfoForWrite(
     const std::string& header, std::unique_ptr<EncryptionParams> encryption_params,
@@ -186,28 +242,39 @@ Status CreateRandomAccessFile(ReadablePtr* result,
                               HeaderManager* header_manager,
                               ReadablePtr underlying) {
   result->reset();
-  std::unique_ptr<BlockAccessCipherStream> stream;
-  uint32_t header_size;
-
-  const auto file_encrypted = VERIFY_RESULT(GetEncryptionInfoFromFile<BufType>(
-      header_manager, underlying.get(), &stream, &header_size));
-
-  if (!file_encrypted) {
+  auto header = VERIFY_RESULT(ReadFileEncryptionHeader<BufType>(header_manager, underlying.get()));
+  if (!header) {
     *result = std::move(underlying);
     return Status::OK();
   }
 
-  result->reset(new EncryptedFile(std::move(underlying), std::move(stream), header_size));
+  if (header->params->cipher_mode != CipherMode::kCtr) {
+    *result = VERIFY_RESULT(NewGcmRandomAccessFile(std::move(underlying), *header));
+    return Status::OK();
+  }
+
+  auto stream = VERIFY_RESULT(BlockAccessCipherStream::FromEncryptionParams(
+      std::move(header->params)));
+  result->reset(new EncryptedFile(std::move(underlying), std::move(stream), header->header_size));
   return Status::OK();
 }
 
 template <typename EncryptedFile, typename WritablePtr>
 Status CreateWritableFile(WritablePtr* result,
                           HeaderManager* header_manager,
-                          WritablePtr underlying) {
+                          WritablePtr underlying,
+                          GcmFileLayout gcm_layout = GcmFileLayout::kChunks) {
   result->reset();
   if (!VERIFY_RESULT(header_manager->IsEncryptionEnabled())) {
     *result = std::move(underlying);
+    return Status::OK();
+  }
+
+  const auto algorithm = VERIFY_RESULT(header_manager->GetEncryptionAlgorithm());
+  if (VERIFY_RESULT(AlgorithmCipherMode(algorithm)) == CipherMode::kGcm) {
+    auto params = VERIFY_RESULT(EncryptionParams::NewEncryptionParams(algorithm, gcm_layout));
+    auto header = VERIFY_RESULT(header_manager->SerializeEncryptionParams(*params));
+    *result = VERIFY_RESULT(NewGcmWritableFile(std::move(underlying), *params, header));
     return Status::OK();
   }
 

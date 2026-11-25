@@ -29,9 +29,10 @@ class EncryptedWritableFile : public WritableFileWrapper {
 
   static Status Create(std::unique_ptr<WritableFile>* result,
                        HeaderManager* header_manager,
-                       std::unique_ptr<WritableFile> underlying) {
+                       std::unique_ptr<WritableFile> underlying,
+                       GcmFileLayout gcm_layout) {
     return CreateWritableFile<EncryptedWritableFile>(
-        result, header_manager, std::move(underlying));
+        result, header_manager, std::move(underlying), gcm_layout);
   }
 
   // Default constructor.
@@ -111,7 +112,9 @@ class EncryptedFileFactory : public FileFactoryWrapper {
     std::unique_ptr<WritableFile> underlying;
     RETURN_NOT_OK(FileFactoryWrapper::NewTempWritableFile(
         opts, name_template, created_filename, &underlying));
-    return EncryptedWritableFile::Create(result, header_manager_.get(), std::move(underlying));
+    return EncryptedWritableFile::Create(
+        result, header_manager_.get(), std::move(underlying),
+        opts.encryption_writer_seals_records ? GcmFileLayout::kRecords : GcmFileLayout::kChunks);
   }
 
   Status NewWritableFile(const WritableFileOptions& opts,
@@ -122,31 +125,39 @@ class EncryptedFileFactory : public FileFactoryWrapper {
         opts.mode == EnvWrapper::OPEN_EXISTING) {
       std::unique_ptr<yb::RandomAccessFile> underlying_r;
       RETURN_NOT_OK(FileFactoryWrapper::NewRandomAccessFile(fname, &underlying_r));
-      std::unique_ptr<BlockAccessCipherStream> stream;
-      uint32_t header_size;
-      std::string universe_key_id;
-      const auto file_encrypted = VERIFY_RESULT(GetEncryptionInfoFromFile<uint8_t>(
-          header_manager_.get(), underlying_r.get(), &stream, &header_size, &universe_key_id));
-      if (file_encrypted != VERIFY_RESULT(header_manager_->IsEncryptionEnabled())) {
-        return STATUS(NotSupported,
-            "File's encryption state doesn't match with tserver's encryption state");
+      auto header = VERIFY_RESULT(
+          ReadFileEncryptionHeader<uint8_t>(header_manager_.get(), underlying_r.get()));
+      if (header) {
+        switch (header->params->cipher_mode) {
+          case CipherMode::kCtr:
+            break;
+          case CipherMode::kGcm:
+            // Appending would continue a partial chunk whose tag cannot be extended.
+            return STATUS(NotSupported, "Cannot reopen a chunked AES-GCM file for append");
+          case CipherMode::kGcmRecord:
+            // Write-once record files derive nonces from positions, so rewriting a torn tail
+            // would reuse nonces. Files that store their nonces draw a new nonce base per writer
+            // session and can be rewritten.
+            if (!header->params->record_nonce_stored) {
+              return STATUS(
+                  NotSupported, "Cannot reopen a write-once AES-GCM record file for append");
+            }
+            break;
+        }
       }
-      if (file_encrypted) {
-        if (universe_key_id != VERIFY_RESULT(header_manager_->GetLatestUniverseKeyId())) {
-          return STATUS(NotSupported, "File's universe key id is not the latest universe key id");
-        }
-        // set_encryption_algorithm can change the data-key size without a key rotation. Starting a
-        // new segment makes the change reach the WAL at the next restart instead of at rollover.
-        const auto algorithm = VERIFY_RESULT(header_manager_->GetEncryptionAlgorithm());
-        if (stream->key_size() != VERIFY_RESULT(DataKeySize(algorithm))) {
-          return STATUS_FORMAT(
-              NotSupported, "File's $0-bit data key does not match the current algorithm $1",
-              stream->key_size() * 8, EncryptionAlgorithmName(algorithm));
-        }
+      RETURN_NOT_OK(CheckEncryptedLikeNewFile(header));
+      if (header) {
         auto new_opts = opts;
-        new_opts.initial_offset = opts.initial_offset.value() + header_size;
+        new_opts.initial_offset = opts.initial_offset.value() + header->header_size;
         std::unique_ptr<WritableFile> underlying;
         RETURN_NOT_OK(FileFactoryWrapper::NewWritableFile(new_opts, fname, &underlying));
+        if (header->params->cipher_mode == CipherMode::kGcmRecord) {
+          *result = VERIFY_RESULT(ReopenGcmRecordWritableFile(std::move(underlying), *header));
+          return Status::OK();
+        }
+        const auto header_size = header->header_size;
+        auto stream = VERIFY_RESULT(BlockAccessCipherStream::FromEncryptionParams(
+            std::move(header->params)));
         result->reset(new EncryptedWritableFile(
             std::move(underlying), std::move(stream), header_size));
         return Status::OK();
@@ -160,6 +171,33 @@ class EncryptedFileFactory : public FileFactoryWrapper {
   }
 
  private:
+  // A reopened file keeps the encryption of its header. Reuse it only if a new file would be
+  // encrypted the same way; otherwise a change of encryption state, universe key, cipher or key
+  // size would not reach the WAL until the segment rolls over. The log starts a new segment when
+  // this fails.
+  Status CheckEncryptedLikeNewFile(const std::optional<FileEncryptionHeader>& header) {
+    if (header.has_value() != VERIFY_RESULT(header_manager_->IsEncryptionEnabled())) {
+      return STATUS(NotSupported,
+          "File's encryption state doesn't match with tserver's encryption state");
+    }
+    if (!header) {
+      return Status::OK();
+    }
+    if (header->universe_key_id != VERIFY_RESULT(header_manager_->GetLatestUniverseKeyId())) {
+      return STATUS(NotSupported, "File's universe key id is not the latest universe key id");
+    }
+    const auto algorithm = VERIFY_RESULT(header_manager_->GetEncryptionAlgorithm());
+    const bool file_is_gcm = header->params->cipher_mode != CipherMode::kCtr;
+    if (file_is_gcm != (VERIFY_RESULT(AlgorithmCipherMode(algorithm)) == CipherMode::kGcm) ||
+        header->params->key_size != VERIFY_RESULT(DataKeySize(algorithm))) {
+      return STATUS_FORMAT(NotSupported,
+          "File's encryption ($0, $1-bit key) is not the current algorithm $2",
+          file_is_gcm ? "GCM" : "CTR", header->params->key_size * 8,
+          EncryptionAlgorithmName(algorithm));
+    }
+    return Status::OK();
+  }
+
   std::unique_ptr<HeaderManager> header_manager_;
 };
 

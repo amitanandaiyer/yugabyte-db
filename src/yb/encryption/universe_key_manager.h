@@ -37,7 +37,8 @@ class UniverseKeyManager {
   Result<bool> IsEncryptionEnabled();
   // Algorithm for new files: encryption_algorithm_override if set, otherwise the algorithm recorded
   // in the registry. The algorithm comes from the master, so one this release does not support
-  // fails the file write in NewEncryptionParams.
+  // fails the file write in NewEncryptionParams. AES-GCM falls back to AES-CTR with the same key
+  // size until enable_encryption_gcm is promoted.
   Result<EncryptionAlgorithmPB> GetEncryptionAlgorithm();
  private:
   // Registry from master.

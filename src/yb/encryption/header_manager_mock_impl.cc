@@ -72,7 +72,7 @@ Result<std::string> HeaderManagerMockImpl::GetLatestUniverseKeyId() {
 }
 
 Result<EncryptionAlgorithmPB> HeaderManagerMockImpl::GetEncryptionAlgorithm() {
-  return ENCRYPTION_ALGORITHM_AES_256_CTR;
+  return algorithm_;
 }
 } // namespace encryption
 } // namespace yb

@@ -13,8 +13,28 @@
 
 #pragma once
 
+#include "yb/util/enums.h"
+
 namespace yb {
 namespace encryption {
+
+// kGcm is chunked AES-GCM applied by the file layer; kGcmRecord is AES-GCM applied by the writer to
+// each record. UniverseKeyManager and HeaderManager only ever select kCtr or kGcm; kGcm becomes
+// kGcmRecord for files whose writer seals its own records (see GcmFileLayout).
+YB_DEFINE_ENUM(CipherMode, (kCtr)(kGcm)(kGcmRecord));
+
+// How a new file is encrypted when AES-GCM is selected.
+YB_DEFINE_ENUM(GcmFileLayout,
+    // Fixed-size chunks sealed by the file layer; a missing final chunk is corruption.
+    (kChunks)
+    // As kChunks, but a reader accepts a file cut short by a crash (RocksDB MANIFEST).
+    (kChunksWithUnauthenticatedTail)
+    // The writer seals each record with record_cipher(), and the file is never rewritten: each
+    // nonce is derived from the record's position and not stored (SST blocks).
+    (kWriteOnceRecords)
+    // The writer seals each record with record_cipher(), and may rewrite records after reopening
+    // the file: each record stores its nonce (WAL entries).
+    (kRecords));
 
 class HeaderManager;
 class UniverseKeyManager;

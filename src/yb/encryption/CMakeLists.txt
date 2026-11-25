@@ -34,6 +34,8 @@ ADD_YB_LIBRARY(encryption
       encrypted_file_factory.cc
       encryption_key_report.cc
       encryption_util.cc
+      gcm_cipher.cc
+      gcm_encrypted_file.cc
       header_manager_impl.cc
       universe_key_manager.cc
   DEPS
@@ -51,3 +53,4 @@ set(YB_TEST_LINK_LIBS encryption encryption_test_util ${YB_MIN_TEST_LIBS})
 
 ADD_YB_TEST(ctr_cipher_stream-test)
 ADD_YB_TEST(encrypted_env-test)
+ADD_YB_TEST(gcm_cipher-test)

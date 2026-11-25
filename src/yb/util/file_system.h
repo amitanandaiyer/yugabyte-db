@@ -22,6 +22,8 @@
 
 namespace yb {
 
+class RecordCipher;
+
 // Options for opening a file to read/write.
 struct FileSystemOptions {
 
@@ -163,6 +165,10 @@ class RandomAccessFile : public FileWithNameAndUniqueId {
     return 0;
   }
 
+  // Non-null if the file was written with record-level encryption: its contents are records sealed
+  // by the writer, which the reader must open with this cipher.
+  virtual const RecordCipher* record_cipher() const { return nullptr; }
+
   // Used by the file_reader_writer to decide if the ReadAhead wrapper
   // should simply forward the call and do not enact buffering or locking.
   virtual bool ShouldForwardRawRequest() const {
@@ -225,6 +231,10 @@ class WritableFile : public FileWithNameAndUniqueId {
   // operation. Default implementation is a no-op for backends that do not
   // support preallocation.
   virtual Status PreAllocate(uint64_t size) { return Status::OK(); }
+
+  // Non-null if the writer must seal each record with this cipher before appending it; see
+  // RandomAccessFile::record_cipher.
+  virtual const RecordCipher* record_cipher() const { return nullptr; }
 
   virtual Status Append(const Slice& data) = 0;
 
@@ -402,6 +412,8 @@ class RandomAccessFileWrapper : public RandomAccessFile {
 
   uint64_t GetEncryptionHeaderSize() const override { return target_->GetEncryptionHeaderSize(); }
 
+  const RecordCipher* record_cipher() const override { return target_->record_cipher(); }
+
   bool ShouldForwardRawRequest() const override {
     return target_->ShouldForwardRawRequest();
   }
@@ -435,6 +447,7 @@ class WritableFileWrapper : public WritableFile {
   using WritableFile::Flush;  // expose the no-arg overload alongside Flush(FlushMode).
 
   Status PreAllocate(uint64_t size) override { return target_->PreAllocate(size); }
+  const RecordCipher* record_cipher() const override { return target_->record_cipher(); }
   Status Append(const Slice& data) override;
   Status AppendSlices(const Slice* slices, size_t num) override;
   Status PositionedAppend(const Slice& data, uint64_t offset) override;
