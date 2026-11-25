@@ -164,6 +164,29 @@ Clusters that enabled encryption at rest before AES-256 became the default, or w
 
     The report groups the files on the node by category (`Data`, `Wal`, `Snapshot`, `Metadata`), file type, data key size (`data_key_bits`), and the universe key that encrypts the data key (`universe_key_id`, `universe_key_bits`). `aes128_files` is the number of files still protected by a 128-bit key; with `list_aes128_files`, the report also lists their paths, up to 1000, and sets `aes128_paths_truncated` if there are more. `unreadable_files` counts files whose header could not be read, and `undecodable_files` counts encrypted files whose universe key is missing from the cluster, so their key sizes are unknown. Migration is complete when both are 0 and only the files described in the previous step remain on 128-bit keys. The report reads the header of every file on the node, so avoid running it frequently on nodes with many files.
 
+## Use AES-GCM
+
+By default, data files are encrypted with AES in CTR mode, which keeps data confidential but does not detect changes to the encrypted files. In GCM mode, data is also authenticated, and reading data that was modified fails with a corruption error:
+
+- Each data file block and each WAL record carries its own 16-byte authentication tag. WAL records also store a 12-byte nonce.
+- Other files, such as RocksDB `MANIFEST` files and tablet metadata, are encrypted in 4 KB chunks, each with a 16-byte tag.
+
+To switch a cluster to GCM:
+
+1. Make sure every node runs a release that supports AES-GCM and the upgrade is finalized. You cannot roll back to an earlier release after GCM files have been written.
+
+1. Switch new files to GCM, keeping the key size the cluster uses:
+
+    ```sh
+    yb-admin --master_addresses $MASTER_ADDRESSES set_encryption_algorithm AES_256_GCM
+    ```
+
+    YB-TServers pick up the change on their next heartbeat to the YB-Master leader. Existing files stay in CTR mode, and remain readable, until they are rewritten.
+
+1. To rewrite existing data in GCM mode, follow the restart, compaction and verification steps in [Migrate an existing cluster to AES-256](#migrate-an-existing-cluster-to-aes-256). The restart also moves each tablet's WAL to GCM. The encryption key report shows each file's `cipher_mode`.
+
+RocksDB `MANIFEST` files are appended to over time. If a YB-TServer crashes, the data written to a `MANIFEST` since its last complete 4 KB chunk is not authenticated when the node restarts.
+
 ## Disable encryption
 
 Disabling encryption at rest stops encryption of new data. Data already on disk stays encrypted until compaction rewrites it, and the cluster still needs the universe keys to read that data.

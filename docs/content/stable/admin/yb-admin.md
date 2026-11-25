@@ -2019,7 +2019,7 @@ yb-admin \
 ```
 
 * *master-addresses*: Comma-separated list of YB-Master hosts and ports. Default is `localhost:7100`.
-* *algorithm*: `AES_256_CTR` or `AES_128_CTR`.
+* *algorithm*: `AES_256_CTR`, `AES_128_CTR`, `AES_256_GCM`, or `AES_128_GCM`. The GCM algorithms also authenticate data; see [Use AES-GCM](../../secure/encryption-at-rest/#use-aes-gcm).
 
 #### disable_encryption_in_memory
 
