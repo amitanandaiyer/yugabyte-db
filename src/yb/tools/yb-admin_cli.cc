@@ -2292,7 +2292,7 @@ Status rotate_universe_key_in_memory_action(
   return Status::OK();
 }
 
-Status set_encryption_algorithm_action(
+Status SetEncryptionAlgorithmAction(
     const ClusterAdminCli::CLIArguments& args, ClusterAdminClient* client) {
   if (args.size() != 1) {
     return ClusterAdminCli::kInvalidArguments;
@@ -3609,7 +3609,7 @@ void ClusterAdminCli::RegisterCommandHandlers() {
   Register(
       "set_encryption_algorithm",
       "<" + JoinStrings(encryption::EncryptionAlgorithmNames(), "|") + ">",
-      set_encryption_algorithm_action);
+      SetEncryptionAlgorithmAction);
   REGISTER_COMMAND(disable_encryption_in_memory);
   REGISTER_COMMAND(write_universe_key_to_file);
   REGISTER_COMMAND(are_nodes_safe_to_take_down);
