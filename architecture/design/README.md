@@ -18,6 +18,7 @@ Below you can find a table of high level and non-trivial features, relevant desi
 |Distributed transactions|Mikhail B, Sergei|
 |DocDB encoding|TBD|
 |[Encryption at rest](docdb-encryption-at-rest.md)|Rahul|
+|[AES-GCM encryption at rest](docdb-encryption-aes-gcm.md)|Amitanand|
 |Master DDL operation handling|TBD|
 |[Online index backfill](online-index-backfill.md)|Amitanand|
 |Raft consensus|TBD|

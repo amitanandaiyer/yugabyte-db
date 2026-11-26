@@ -96,6 +96,22 @@ Status CopyFile(
   return Status::OK();
 }
 
+Status CopyTableFile(
+    Env* env, Env* raw_env, const std::string& source, const std::string& destination,
+    CopyFileSync sync, const EnvOptions& env_options, yb::PriorityThreadPoolSuspender* suspender,
+    const std::atomic<bool>* shutting_down) {
+  std::unique_ptr<RandomAccessFile> file;
+  RETURN_NOT_OK(env->NewRandomAccessFile(source, &file, env_options));
+  if (file->record_cipher()) {
+    SCHECK(raw_env && raw_env->IsPlainText(), NotSupported, yb::Format(
+        "Can't copy $0: its blocks are sealed with AES-GCM and no plaintext env is set", source));
+    env = raw_env;
+  }
+  file.reset();
+  return CopyFile(
+      env, source, destination, /* size= */ 0, sync, env_options, suspender, shutting_down);
+}
+
 Status CheckIfDeleted(Env* env, const string& fname, const Status& s_del) {
   if (!s_del.ok()) {
     // NotFound is ok, the file was concurrently deleted.

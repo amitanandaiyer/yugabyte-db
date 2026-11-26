@@ -65,6 +65,7 @@
 
 #include "yb/util/mem_tracker.h"
 #include "yb/util/memory/memory_usage.h"
+#include "yb/util/record_cipher.h"
 #include "yb/util/status_log.h"
 
 DEFINE_test_flag(bool, allow_table_option_compressed_block_cache, false, "If true, the table option"
@@ -662,9 +663,25 @@ size_t BlockBasedTableBuilder::WriteRawBlock(const Slice& block_contents,
   Rep* r = rep_;
   StopWatchMicro sw(r->ioptions.env, r->ioptions.statistics, WRITE_RAW_BLOCK_MICROS);
   const auto start_offset = writer_info->offset;
+  // The block as stored: sealed with record-level encryption, otherwise the contents themselves.
+  // The handle, checksum and file offsets cover the stored bytes.
+  Slice stored = block_contents;
+  std::string sealed;
+  if (const auto* cipher = writer_info->writer->writable_file()->record_cipher()) {
+    sealed.resize(block_contents.size() + cipher->Overhead());
+    char aad[kBlockRecordAadSize];
+    EncodeBlockRecordAad(start_offset, type, aad);
+    r->status = cipher->Seal(
+        start_offset, Slice(aad, sizeof(aad)), block_contents,
+        reinterpret_cast<uint8_t*>(sealed.data()));
+    if (!r->status.ok()) {
+      return 0;
+    }
+    stored = sealed;
+  }
   handle->set_offset(writer_info->offset);
-  handle->set_size(block_contents.size());
-  r->status = writer_info->writer->Append(block_contents);
+  handle->set_size(stored.size());
+  r->status = writer_info->writer->Append(stored);
   if (r->status.ok()) {
     char trailer[kBlockTrailerSize];
     trailer[0] = type;
@@ -680,15 +697,14 @@ size_t BlockBasedTableBuilder::WriteRawBlock(const Slice& block_contents,
         FALLTHROUGH_INTENDED;
 #endif
       case kCRC32c: {
-        auto crc = crc32c::Value(block_contents.data(), block_contents.size());
+        auto crc = crc32c::Value(stored.data(), stored.size());
         crc = crc32c::Extend(crc, trailer, 1);  // Extend to cover block type
         EncodeFixed32(trailer_without_type, crc32c::Mask(crc));
         break;
       }
       case kxxHash: {
         void* xxh = XXH32_init(0);
-        XXH32_update(xxh, block_contents.data(),
-                     static_cast<uint32_t>(block_contents.size()));
+        XXH32_update(xxh, stored.data(), static_cast<uint32_t>(stored.size()));
         XXH32_update(xxh, trailer, 1);  // Extend  to cover block type
         EncodeFixed32(trailer_without_type, XXH32_digest(xxh));
         break;
@@ -700,7 +716,7 @@ size_t BlockBasedTableBuilder::WriteRawBlock(const Slice& block_contents,
       r->status = InsertBlockInCache(block_contents, type, handle, writer_info);
     }
     if (r->status.ok()) {
-      writer_info->offset += block_contents.size() + kBlockTrailerSize;
+      writer_info->offset += stored.size() + kBlockTrailerSize;
     }
   }
   return writer_info->offset - start_offset;
@@ -893,7 +909,18 @@ Status BlockBasedTableBuilder::Finish() {
     footer.set_checksum(r->table_options.checksum);
     std::string footer_encoding;
     footer.AppendEncodedTo(&footer_encoding);
-    r->status = r->metadata_writer->writer->Append(footer_encoding);
+    // The footer holds the index and metaindex handles. Every block is authenticated, but a
+    // modified handle could point at another genuine block, so authenticate the footer too.
+    if (const auto* cipher = r->metadata_writer->writer->writable_file()->record_cipher()) {
+      std::string seal(cipher->Overhead(), '\0');
+      r->status = cipher->Seal(
+          r->metadata_writer->offset + footer_encoding.size(), footer_encoding, Slice(),
+          reinterpret_cast<uint8_t*>(seal.data()));
+      footer_encoding += seal;
+    }
+    if (r->status.ok()) {
+      r->status = r->metadata_writer->writer->Append(footer_encoding);
+    }
     if (r->status.ok()) {
       r->metadata_writer->offset += footer_encoding.size();
     }

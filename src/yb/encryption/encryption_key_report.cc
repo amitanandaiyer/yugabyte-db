@@ -51,6 +51,15 @@ EncryptionKeyReportFileCategory Categorize(const std::string& dirname) {
   return EncryptionKeyReportFileCategory::kData;
 }
 
+const char* CipherModeName(CipherMode mode) {
+  switch (mode) {
+    case CipherMode::kCtr: return "CTR";
+    case CipherMode::kGcm: return "GCM";
+    case CipherMode::kGcmRecord: return "GCM-record";
+  }
+  FATAL_INVALID_ENUM_VALUE(CipherMode, mode);
+}
+
 EncryptionKeyReportFileType FileType(const std::string& basename) {
   if (basename.ends_with(".sst") || basename.find(".sblock.") != std::string::npos) {
     return EncryptionKeyReportFileType::kSst;
@@ -77,31 +86,33 @@ Status AddFile(
       .file_type = FileType(BaseName(path)),
       .encrypted = false,
       .data_key_bytes = 0,
+      .cipher_mode = CipherMode::kCtr,
       .universe_key_id = {},
       .universe_key_bytes = 0};
-  std::unique_ptr<BlockAccessCipherStream> stream;
-  uint32_t header_size;
   bool undecodable = false;
   // Empty and very short files cannot carry an encryption header.
   if (bytes >= header_manager->GetEncryptionMetadataStartIndex()) {
-    auto encrypted = GetEncryptionInfoFromFile<uint8_t>(
-        header_manager, file.get(), &stream, &header_size, &key.universe_key_id);
-    if (encrypted.ok()) {
-      key.encrypted = *encrypted;
+    auto header = ReadFileEncryptionHeader<uint8_t>(
+        header_manager, file.get(), &key.universe_key_id);
+    if (header.ok()) {
+      if (*header) {
+        key.encrypted = true;
+        key.data_key_bytes = (*header)->params->key_size;
+        key.cipher_mode = (*header)->params->cipher_mode;
+      }
     } else if (!key.universe_key_id.empty()) {
       // The header names its universe key, which is parsed before the data key is decrypted, so
       // this file is encrypted under a universe key that is missing from the registry.
-      VLOG(1) << "Cannot decrypt the data key of " << path << ": " << encrypted.status();
+      VLOG(1) << "Cannot decrypt the data key of " << path << ": " << header.status();
       key.encrypted = true;
       undecodable = true;
     } else {
-      return encrypted.status();
+      return header.status();
     }
   }
   if (undecodable) {
     ++report->undecodable_files;
   } else if (key.encrypted) {
-    key.data_key_bytes = stream->key_size();
     auto universe_params = universe_key_manager->GetUniverseParamsWithVersion(key.universe_key_id);
     if (universe_params.ok()) {
       key.universe_key_bytes = (*universe_params)->key_size;
@@ -164,6 +175,8 @@ void EncryptionKeyReport::ToJson(JsonWriter* jw) const {
     if (key.encrypted) {
       jw->String("data_key_bits");
       jw->Uint(key.data_key_bytes * 8);
+      jw->String("cipher_mode");
+      jw->String(CipherModeName(key.cipher_mode));
       jw->String("universe_key_id");
       jw->String(key.universe_key_id);
       jw->String("universe_key_bits");

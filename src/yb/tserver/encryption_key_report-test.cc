@@ -94,6 +94,7 @@ TEST_F(EncryptionKeyReportTest, GroupsByKeySizeAndCategory) {
     EncryptionKeyReport::Key key{
         .category = category, .file_type = file_type, .encrypted = encrypted,
         .data_key_bytes = encrypted ? data_key_bytes : 0,
+        .cipher_mode = CipherMode::kCtr,
         .universe_key_id = encrypted ? universe_key_id : "",
         .universe_key_bytes = encrypted ? 32U : 0};
     auto it = report.groups.find(key);
@@ -133,7 +134,8 @@ TEST_F(EncryptionKeyReportTest, MissingUniverseKey) {
       universe_key_manager_.get()));
   EncryptionKeyReport::Key key{
       .category = Category::kData, .file_type = FileType::kSst, .encrypted = true,
-      .data_key_bytes = 0, .universe_key_id = other_key_id, .universe_key_bytes = 0};
+      .data_key_bytes = 0, .cipher_mode = CipherMode::kCtr, .universe_key_id = other_key_id,
+      .universe_key_bytes = 0};
   ASSERT_EQ(report.groups.size(), 1);
   ASSERT_EQ(report.groups.begin()->first, key);
   ASSERT_EQ(report.undecodable_files, 1);

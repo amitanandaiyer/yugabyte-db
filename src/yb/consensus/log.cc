@@ -2514,6 +2514,7 @@ WritableFileOptions Log::GetNewSegmentWritableFileOptions() {
   // We always want to sync on close: https://github.com/yugabyte/yugabyte-db/issues/3490
   opts.sync_on_close = true;
   opts.o_direct = durable_wal_write_;
+  opts.encryption_writer_seals_records = true;
   return opts;
 }
 

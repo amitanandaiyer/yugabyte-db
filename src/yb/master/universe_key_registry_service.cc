@@ -27,6 +27,8 @@
 
 using std::string;
 
+DECLARE_bool(enable_encryption_gcm);
+
 namespace yb {
 namespace master {
 
@@ -109,7 +111,11 @@ Status RotateUniverseKey(const Slice& old_universe_key,
 Status SetEncryptionAlgorithm(
     const Slice& universe_key, encryption::EncryptionAlgorithmPB algorithm,
     EncryptionInfoPB* encryption_info) {
-  RETURN_NOT_OK(encryption::DataKeySize(algorithm));
+  if (VERIFY_RESULT(encryption::AlgorithmCipherMode(algorithm)) == encryption::CipherMode::kGcm) {
+    SCHECK(FLAGS_enable_encryption_gcm, IllegalState,
+           "AES-GCM requires the enable_encryption_gcm AutoFlag, which is promoted once every "
+           "process runs a release that supports it");
+  }
   auto decrypted = VERIFY_RESULT(DecryptUniverseKeyRegistry(
       encryption_info->universe_key_registry_encoded(), universe_key));
   auto registry = VERIFY_RESULT(

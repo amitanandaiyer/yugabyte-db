@@ -17,6 +17,14 @@ package yb.encryption;
 
 option java_package = "org.yb.encryption";
 
+enum EncryptionCipherModePB {
+  ENCRYPTION_CIPHER_MODE_CTR = 0;
+  ENCRYPTION_CIPHER_MODE_GCM = 1;
+  // AES-GCM applied by the file's writer to each record (SST block, WAL entry batch) through
+  // yb::RecordCipher. The file layer itself stores the records as written.
+  ENCRYPTION_CIPHER_MODE_GCM_RECORD = 2;
+}
+
 message EncryptionParamsPB {
   bytes data_key = 1;
   bytes nonce = 2;
@@ -24,6 +32,16 @@ message EncryptionParamsPB {
   // When computing counter increment, do we want to overflow the counter into the rest of the
   // initialization vector as part of the new format.
   bool openssl_compatible_counter_overflow  = 4;
+  // Releases before GCM support ignore these fields and would decrypt a GCM file as CTR, so GCM
+  // files are written only once enable_encryption_gcm is promoted. The data key size is that of
+  // data_key, as for CTR.
+  EncryptionCipherModePB cipher_mode = 5;
+  // GCM (chunked) only: plaintext bytes per authenticated chunk.
+  uint32 gcm_chunk_size = 6;
+  reserved 7;
+  // GCM record only: each record stores its nonce. Otherwise the nonce is derived from the file
+  // nonce and the record's position, which is only safe for files that are never rewritten (SSTs).
+  bool record_nonce_stored = 8;
 }
 
 message UniverseKeysPB {
@@ -37,6 +55,10 @@ enum EncryptionAlgorithmPB {
   // existed, which stays on AES-128 until it is migrated.
   ENCRYPTION_ALGORITHM_AES_128_CTR = 0;
   ENCRYPTION_ALGORITHM_AES_256_CTR = 1;
+  // AES-GCM: SST blocks and WAL records are sealed by their writers; other files in chunks. Written
+  // only once enable_encryption_gcm is promoted.
+  ENCRYPTION_ALGORITHM_AES_128_GCM = 2;
+  ENCRYPTION_ALGORITHM_AES_256_GCM = 3;
 }
 
 message UniverseKeyRegistryPB {

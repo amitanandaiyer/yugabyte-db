@@ -181,15 +181,53 @@ class EncryptionTest : public YBTableTestBase, public testing::WithParamInterfac
     }, 30s, Format("Wait for tservers to write $0-bit data keys", data_key_bits));
   }
 
-  // Number of encrypted WAL segments, across all tservers, with data_key_bits-bit data keys.
-  Result<uint64_t> CountWalSegments(uint32_t data_key_bits) {
+  // Sets the algorithm for new files and waits until every tserver uses it.
+  Status SetAndWaitForAlgorithm(encryption::EncryptionAlgorithmPB algorithm) {
+    RETURN_NOT_OK(yb_admin_client_->SetEncryptionAlgorithm(algorithm));
+    const auto name = encryption::EncryptionAlgorithmName(algorithm);
+    return LoggedWaitFor([&]() -> Result<bool> {
+      for (auto* ts : external_mini_cluster()->tserver_daemons()) {
+        auto doc = VERIFY_RESULT(GetEncryptionKeyReport(ts));
+        if (!doc.HasMember("encryption_algorithm_for_new_files") ||
+            doc["encryption_algorithm_for_new_files"].GetString() != name) {
+          return false;
+        }
+      }
+      return true;
+    }, 30s, Format("Wait for tservers to write $0 files", name));
+  }
+
+  // Number of encrypted RocksDB SST and MANIFEST files, across all tservers, in cipher_mode
+  // as the key report names it ("CTR", "GCM" or "GCM-record").
+  Result<uint64_t> CountRocksDBFiles(const std::string& cipher_mode, bool sst_only) {
+    uint64_t result = 0;
+    for (auto* ts : external_mini_cluster()->tserver_daemons()) {
+      auto doc = VERIFY_RESULT(GetEncryptionKeyReport(ts));
+      for (const auto& group : doc["report"]["groups"].GetArray()) {
+        const std::string file_type = group["file_type"].GetString();
+        if (std::string(group["category"].GetString()) != "Data" ||
+            !group["encrypted"].GetBool() ||
+            group["cipher_mode"].GetString() != cipher_mode ||
+            (file_type != "Sst" && (sst_only || file_type != "Manifest"))) {
+          continue;
+        }
+        result += group["files"].GetUint64();
+      }
+    }
+    return result;
+  }
+
+  // Number of WAL segments, across all tservers, in cipher_mode, and with data_key_bits unless it
+  // is 0.
+  Result<uint64_t> CountWalSegments(const std::string& cipher_mode, uint32_t data_key_bits = 0) {
     uint64_t result = 0;
     for (auto* ts : external_mini_cluster()->tserver_daemons()) {
       auto doc = VERIFY_RESULT(GetEncryptionKeyReport(ts));
       for (const auto& group : doc["report"]["groups"].GetArray()) {
         if (std::string(group["category"].GetString()) == "Wal" &&
             std::string(group["file_type"].GetString()) == "WalSegment" &&
-            group["encrypted"].GetBool() && group["data_key_bits"].GetUint() == data_key_bits) {
+            group["encrypted"].GetBool() && group["cipher_mode"].GetString() == cipher_mode &&
+            (data_key_bits == 0 || group["data_key_bits"].GetUint() == data_key_bits)) {
           result += group["files"].GetUint64();
         }
       }
@@ -453,6 +491,9 @@ class WALReuseEncryptionTest : public EncryptionTest {
   }
 
   void TestEncryptWALDataAfterWALReuse(bool rotate_key);
+  void TestWALNotReusedAfterAlgorithmChange(
+      encryption::EncryptionAlgorithmPB algorithm, const std::string& new_segment_cipher_mode,
+      uint32_t new_segment_key_bits);
 };
 
 void WALReuseEncryptionTest::TestEncryptWALDataAfterWALReuse(bool rotate_key) {
@@ -498,22 +539,21 @@ TEST_F_EX(EncryptionTest, EncryptWALDataAfterWALReuseWithRotateKey,
   TestEncryptWALDataAfterWALReuse(true);
 }
 
-// set_encryption_algorithm without a key rotation reaches the WAL at the next restart: the last
-// segment, which has the old data-key size, is not reused.
-TEST_F_EX(EncryptionTest, WALNotReusedAfterKeySizeChange, WALReuseEncryptionTest) {
+// A change of algorithm under the same universe key takes effect on the WAL at the next restart:
+// the last segment is not reused, so the tablet writes a new segment with the new algorithm.
+void WALReuseEncryptionTest::TestWALNotReusedAfterAlgorithmChange(
+    encryption::EncryptionAlgorithmPB algorithm, const std::string& new_segment_cipher_mode,
+    uint32_t new_segment_key_bits) {
   constexpr uint32_t kNumInsert = 100;
   auto* tablet_server = external_mini_cluster()->tablet_server(0);
-  ASSERT_OK(WaitForDataKeyBits(256));
   WriteWorkload(0, kNumInsert);
   tablet_server->Shutdown();
   ASSERT_OK(tablet_server->Restart());
   ASSERT_OK(external_mini_cluster()->WaitForTabletsRunning(tablet_server, 30s));
   ASSERT_EQ(ASSERT_RESULT(external_mini_cluster()->GetSegmentCounts(tablet_server)), 1);
-  ASSERT_EQ(ASSERT_RESULT(CountWalSegments(128)), 0);
+  ASSERT_EQ(ASSERT_RESULT(CountWalSegments(new_segment_cipher_mode, new_segment_key_bits)), 0);
 
-  ASSERT_OK(yb_admin_client_->SetEncryptionAlgorithm(
-      encryption::ENCRYPTION_ALGORITHM_AES_128_CTR));
-  ASSERT_OK(WaitForDataKeyBits(128));
+  ASSERT_OK(SetAndWaitForAlgorithm(algorithm));
   tablet_server->Shutdown();
   ASSERT_OK(tablet_server->Restart());
   ASSERT_OK(external_mini_cluster()->WaitForTabletsRunning(tablet_server, 30s));
@@ -521,13 +561,23 @@ TEST_F_EX(EncryptionTest, WALNotReusedAfterKeySizeChange, WALReuseEncryptionTest
   // the old segment may already be garbage-collected, so wait for the new segment instead of
   // counting segments.
   ASSERT_OK(LoggedWaitFor([&]() -> Result<bool> {
-    return VERIFY_RESULT(CountWalSegments(128)) > 0;
-  }, 30s, "Wait for a WAL segment with 128-bit data keys"));
+    return VERIFY_RESULT(CountWalSegments(new_segment_cipher_mode, new_segment_key_bits)) > 0;
+  }, 30s, Format("Wait for a $0 WAL segment", new_segment_cipher_mode)));
 
   WriteWorkload(kNumInsert, 2 * kNumInsert);
   ASSERT_NO_FATALS(VerifyWrittenRecords());
   ClusterVerifier cv(external_mini_cluster());
   ASSERT_NO_FATALS(cv.CheckCluster());
+}
+
+TEST_F_EX(EncryptionTest, WALNotReusedAfterSwitchToGcm, WALReuseEncryptionTest) {
+  TestWALNotReusedAfterAlgorithmChange(
+      encryption::ENCRYPTION_ALGORITHM_AES_256_GCM, "GCM-record", 256);
+}
+
+// The cipher stays CTR, but the data key size changes.
+TEST_F_EX(EncryptionTest, WALNotReusedAfterKeySizeChange, WALReuseEncryptionTest) {
+  TestWALNotReusedAfterAlgorithmChange(encryption::ENCRYPTION_ALGORITHM_AES_128_CTR, "CTR", 128);
 }
 
 class WALRolloverTest : public EncryptionTest {
@@ -624,6 +674,65 @@ TEST_F_EX(EncryptionTest, MigrateFromAes128ToAes256, EncryptionMigrationTest) {
     }
     return paths.empty();
   }, 60s, "Wait for all RocksDB files to be on AES-256 keys"));
+
+  ASSERT_NO_FATALS(VerifyWrittenRecords());
+  ClusterVerifier cv(external_mini_cluster());
+  ASSERT_NO_FATALS(cv.CheckCluster());
+}
+
+class EncryptionGcmTest : public EncryptionTest {
+ public:
+  void BeforeCreateTable() override {
+    ASSERT_NO_FATALS(EncryptionTest::BeforeCreateTable());
+    ASSERT_OK(SetAndWaitForAlgorithm(encryption::ENCRYPTION_ALGORITHM_AES_256_GCM));
+  }
+};
+
+// Writes, flushes and compacts with AES-GCM, then kills a tserver, so that it reuses its last WAL
+// segments and reads back MANIFEST files that were never closed, and checks it recovers.
+TEST_F_EX(EncryptionTest, GcmWriteReadAndCrash, EncryptionGcmTest) {
+  WriteWorkload(0, kNumKeys);
+  ASSERT_NO_FATALS(VerifyWrittenRecords());
+  // SST blocks, MANIFEST records and WAL records are all sealed by their writers, so no SST or
+  // MANIFEST is in CTR or chunked GCM.
+  ASSERT_EQ(ASSERT_RESULT(CountRocksDBFiles("CTR", /* sst_only= */ false)), 0);
+  ASSERT_EQ(ASSERT_RESULT(CountRocksDBFiles("GCM", /* sst_only= */ false)), 0);
+  ASSERT_GT(ASSERT_RESULT(CountRocksDBFiles("GCM-record", /* sst_only= */ true)), 0);
+  ASSERT_EQ(ASSERT_RESULT(CountWalSegments("CTR")), 0);
+  ASSERT_GT(ASSERT_RESULT(CountWalSegments("GCM-record")), 0);
+
+  auto* ts = external_mini_cluster()->tablet_server(0);
+  ASSERT_OK(ts->Kill(SIGKILL));
+  ts->Shutdown();
+  ASSERT_OK(ts->Restart());
+  ASSERT_OK(external_mini_cluster()->WaitForTabletsRunning(ts, 30s));
+
+  WriteWorkload(kNumKeys, 2 * kNumKeys);
+  ASSERT_NO_FATALS(VerifyWrittenRecords());
+  ClusterVerifier cv(external_mini_cluster());
+  ASSERT_NO_FATALS(cv.CheckCluster());
+}
+
+// Moves a universe that writes AES-CTR files to AES-GCM under load: select GCM, restart tservers
+// one at a time, and run a full compaction, as in the AES-256 migration.
+TEST_F(EncryptionTest, MigrateFromCtrToGcm) {
+  WriteWorkload(0, kNumKeys);
+  ASSERT_GT(ASSERT_RESULT(CountRocksDBFiles("CTR", /* sst_only= */ true)), 0);
+
+  ASSERT_OK(SetAndWaitForAlgorithm(encryption::ENCRYPTION_ALGORITHM_AES_256_GCM));
+  WriteWorkload(kNumKeys, 2 * kNumKeys);
+
+  for (auto* ts : external_mini_cluster()->tserver_daemons()) {
+    ts->Shutdown();
+    ASSERT_OK(ts->Restart());
+    ASSERT_OK(external_mini_cluster()->WaitForTabletsRunning(ts, 30s));
+  }
+  ASSERT_OK(WaitForLoadBalanced());
+  ASSERT_OK(client_->CompactTables({table_->id()}));
+
+  ASSERT_OK(LoggedWaitFor([&]() -> Result<bool> {
+    return VERIFY_RESULT(CountRocksDBFiles("CTR", /* sst_only= */ false)) == 0;
+  }, 60s, "Wait for all RocksDB files to be AES-GCM"));
 
   ASSERT_NO_FATALS(VerifyWrittenRecords());
   ClusterVerifier cv(external_mini_cluster());

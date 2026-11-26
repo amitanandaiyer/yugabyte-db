@@ -83,6 +83,9 @@ class Reader {
   // "*scratch" as temporary storage.  The contents filled in *record
   // will only be valid until the next mutating operation on this
   // reader or the next mutation to *scratch.
+  //
+  // If the file has a record cipher (an AES-GCM encrypted MANIFEST), each record is opened before
+  // it is returned. A record that fails authentication is reported as corruption and ends the read.
   bool ReadRecord(Slice* record, std::string* scratch,
                   WALRecoveryMode wal_recovery_mode =
                       WALRecoveryMode::kTolerateCorruptedTailRecords);
@@ -146,6 +149,11 @@ class Reader {
     // Returned when we read an old record from a previous user of the log.
     kOldRecord = kMaxRecordType + 4,
   };
+
+  // Plaintext of the last record returned by ReadRecord, when the file has a record cipher.
+  std::string opened_record_;
+
+  bool ReadRawRecord(Slice* record, std::string* scratch, WALRecoveryMode wal_recovery_mode);
 
   // Skips all blocks that are completely before "initial_offset_".
   //

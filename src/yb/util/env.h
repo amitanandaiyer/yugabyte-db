@@ -486,6 +486,10 @@ struct WritableFileOptions {
   // Set this variable to customize the default starting offset.
   std::optional<uint64_t> initial_offset;
 
+  // With AES-GCM encryption at rest, the writer seals each record it appends with the file's
+  // record_cipher() instead of the file layer encrypting the whole file (WAL segments).
+  bool encryption_writer_seals_records = false;
+
   WritableFileOptions()
       : sync_on_close(false), o_direct(false), mode(Env::CREATE_IF_NON_EXISTING_TRUNCATE) {}
 };

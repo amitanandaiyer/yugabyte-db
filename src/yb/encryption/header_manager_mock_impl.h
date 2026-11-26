@@ -39,9 +39,12 @@ class HeaderManagerMockImpl : public HeaderManager {
   Result<bool> IsEncryptionEnabled() override;
   Result<EncryptionAlgorithmPB> GetEncryptionAlgorithm() override;
 
+  void SetEncryptionAlgorithm(EncryptionAlgorithmPB algorithm) { algorithm_ = algorithm; }
+
  private:
   EncryptionParamsPtr encryption_params_;
   bool file_encrypted_ = false;
+  EncryptionAlgorithmPB algorithm_ = ENCRYPTION_ALGORITHM_AES_256_CTR;
   const std::string universe_key_id_ = "0";
 };
 

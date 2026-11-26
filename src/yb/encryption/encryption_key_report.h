@@ -50,6 +50,8 @@ struct EncryptionKeyReport {
     bool encrypted;
     // Zero for unencrypted and undecodable files.
     uint32_t data_key_bytes;
+    // kCtr for unencrypted files.
+    CipherMode cipher_mode;
     UniverseKeyId universe_key_id;
     // Zero for unencrypted and undecodable files.
     uint32_t universe_key_bytes;

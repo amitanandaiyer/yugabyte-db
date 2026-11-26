@@ -56,7 +56,8 @@ TAG_FLAG(encryption_counter_max, hidden);
 // prefix, so the enum is the only list of algorithms.
 DEFINE_RUNTIME_string(encryption_algorithm_override, "",
     "Overrides the encryption algorithm recorded in the universe key registry for files this "
-    "tserver writes, such as AES_256_CTR. Empty uses the registry. For diagnostics only.");
+    "tserver writes, such as AES_256_CTR or AES_256_GCM. Empty uses the registry. For "
+    "diagnostics only.");
 TAG_FLAG(encryption_algorithm_override, advanced);
 
 DEFINE_RUNTIME_string(encryption_new_universe_algorithm, "AES_256_CTR",
@@ -64,6 +65,18 @@ DEFINE_RUNTIME_string(encryption_new_universe_algorithm, "AES_256_CTR",
     "enabled for the first time, such as AES_256_CTR or AES_128_CTR. Universes that already "
     "enabled encryption at rest keep their recorded algorithm.");
 TAG_FLAG(encryption_new_universe_algorithm, advanced);
+
+// Releases without AES-GCM support cannot read GCM files, so they are written only once every
+// process runs a release that can.
+DEFINE_RUNTIME_AUTO_bool(enable_encryption_gcm, kLocalPersisted, false, true,
+    "Allow writing AES-GCM encrypted files when the universe key registry selects AES-GCM.");
+
+// Larger chunks cost less tag space and fewer GCM operations per read; smaller chunks read less
+// extra data when a read does not line up with chunk boundaries. The size is recorded per file.
+DEFINE_RUNTIME_uint32(encryption_gcm_chunk_size_bytes, 4096,
+    "Plaintext bytes per authenticated chunk in newly written AES-GCM encrypted files.");
+DEFINE_validator(encryption_gcm_chunk_size_bytes, FLAG_RANGE_VALIDATOR(16, 1024 * 1024));
+TAG_FLAG(encryption_gcm_chunk_size_bytes, advanced);
 
 DEFINE_test_flag(bool, encryption_use_openssl_compatible_counter_overflow, true,
                  "Overflow into the rest of the initialization vector when computing counter"
@@ -101,6 +114,18 @@ void EncryptionParams::ToEncryptionParamsPB(EncryptionParamsPB* encryption_heade
   encryption_header->set_nonce(nonce, kBlockSize - 4);
   encryption_header->set_counter(counter);
   encryption_header->set_openssl_compatible_counter_overflow(openssl_compatible_counter_overflow);
+  switch (cipher_mode) {
+    case CipherMode::kCtr:
+      break;
+    case CipherMode::kGcm:
+      encryption_header->set_cipher_mode(ENCRYPTION_CIPHER_MODE_GCM);
+      encryption_header->set_gcm_chunk_size(gcm_chunk_size);
+      break;
+    case CipherMode::kGcmRecord:
+      encryption_header->set_cipher_mode(ENCRYPTION_CIPHER_MODE_GCM_RECORD);
+      encryption_header->set_record_nonce_stored(record_nonce_stored);
+      break;
+  }
 }
 
 Result<EncryptionParamsPtr> EncryptionParams::FromEncryptionParamsPB(
@@ -115,6 +140,22 @@ Result<EncryptionParamsPtr> EncryptionParams::FromEncryptionParamsPB(
   encryption_params->key_size = narrow_cast<uint32_t>(size);
   encryption_params->openssl_compatible_counter_overflow =
       encryption_header.openssl_compatible_counter_overflow();
+  switch (encryption_header.cipher_mode()) {
+    case ENCRYPTION_CIPHER_MODE_CTR:
+      break;
+    case ENCRYPTION_CIPHER_MODE_GCM:
+      SCHECK_GT(encryption_header.gcm_chunk_size(), 0U, Corruption, "GCM chunk size is 0");
+      encryption_params->cipher_mode = CipherMode::kGcm;
+      encryption_params->gcm_chunk_size = encryption_header.gcm_chunk_size();
+      break;
+    case ENCRYPTION_CIPHER_MODE_GCM_RECORD:
+      encryption_params->cipher_mode = CipherMode::kGcmRecord;
+      encryption_params->record_nonce_stored = encryption_header.record_nonce_stored();
+      break;
+    default:
+      return STATUS_FORMAT(
+          NotSupported, "Unknown encryption cipher mode $0", encryption_header.cipher_mode());
+  }
   return encryption_params;
 }
 
@@ -131,8 +172,9 @@ Result<EncryptionParamsPtr> EncryptionParams::FromSlice(const Slice& s) {
 }
 
 Result<EncryptionParamsPtr> EncryptionParams::NewEncryptionParams(
-    EncryptionAlgorithmPB algorithm) {
+    EncryptionAlgorithmPB algorithm, GcmFileLayout gcm_layout) {
   const auto key_size = VERIFY_RESULT(DataKeySize(algorithm));
+  const auto algorithm_mode = VERIFY_RESULT(AlgorithmCipherMode(algorithm));
   auto encryption_params = std::make_unique<EncryptionParams>();
   RAND_bytes(encryption_params->key, key_size);
   RAND_bytes(encryption_params->nonce, kBlockSize - 4);
@@ -152,6 +194,19 @@ Result<EncryptionParamsPtr> EncryptionParams::NewEncryptionParams(
   encryption_params->key_size = key_size;
   encryption_params->openssl_compatible_counter_overflow =
       FLAGS_TEST_encryption_use_openssl_compatible_counter_overflow;
+  if (algorithm_mode == CipherMode::kGcm) {
+    switch (gcm_layout) {
+      case GcmFileLayout::kChunks:
+        encryption_params->cipher_mode = CipherMode::kGcm;
+        encryption_params->gcm_chunk_size = FLAGS_encryption_gcm_chunk_size_bytes;
+        break;
+      case GcmFileLayout::kWriteOnceRecords: [[fallthrough]];
+      case GcmFileLayout::kRecords:
+        encryption_params->cipher_mode = CipherMode::kGcmRecord;
+        encryption_params->record_nonce_stored = gcm_layout == GcmFileLayout::kRecords;
+        break;
+    }
+  }
   return encryption_params;
 }
 
@@ -182,15 +237,36 @@ std::string EncryptionAlgorithmName(EncryptionAlgorithmPB algorithm) {
 
 Result<uint32_t> DataKeySize(EncryptionAlgorithmPB algorithm) {
   switch (algorithm) {
-    case ENCRYPTION_ALGORITHM_AES_128_CTR:
+    case ENCRYPTION_ALGORITHM_AES_128_CTR: [[fallthrough]];
+    case ENCRYPTION_ALGORITHM_AES_128_GCM:
       return EncryptionParams::kAes128KeySize;
-    case ENCRYPTION_ALGORITHM_AES_256_CTR:
+    case ENCRYPTION_ALGORITHM_AES_256_CTR: [[fallthrough]];
+    case ENCRYPTION_ALGORITHM_AES_256_GCM:
       return EncryptionParams::kAes256KeySize;
     default:
       // A later release, or a bad registry, can send a value this release does not support.
       return STATUS_FORMAT(
           NotSupported, "Unsupported encryption algorithm $0", static_cast<int>(algorithm));
   }
+}
+
+Result<CipherMode> AlgorithmCipherMode(EncryptionAlgorithmPB algorithm) {
+  switch (algorithm) {
+    case ENCRYPTION_ALGORITHM_AES_128_CTR: [[fallthrough]];
+    case ENCRYPTION_ALGORITHM_AES_256_CTR:
+      return CipherMode::kCtr;
+    case ENCRYPTION_ALGORITHM_AES_128_GCM: [[fallthrough]];
+    case ENCRYPTION_ALGORITHM_AES_256_GCM:
+      return CipherMode::kGcm;
+    default:
+      return STATUS_FORMAT(
+          NotSupported, "Unsupported encryption algorithm $0", static_cast<int>(algorithm));
+  }
+}
+
+Result<EncryptionAlgorithmPB> CtrAlgorithmWithKeySizeOf(EncryptionAlgorithmPB algorithm) {
+  return VERIFY_RESULT(DataKeySize(algorithm)) == EncryptionParams::kAes128KeySize
+      ? ENCRYPTION_ALGORITHM_AES_128_CTR : ENCRYPTION_ALGORITHM_AES_256_CTR;
 }
 
 namespace {
@@ -282,7 +358,10 @@ bool EncryptionParams::Equals(const EncryptionParams& other) {
          memcmp(nonce, other.nonce, sizeof(nonce)) == 0 &&
          counter == other.counter &&
          key_size == other.key_size &&
-         openssl_compatible_counter_overflow == other.openssl_compatible_counter_overflow;
+         openssl_compatible_counter_overflow == other.openssl_compatible_counter_overflow &&
+         cipher_mode == other.cipher_mode &&
+         gcm_chunk_size == other.gcm_chunk_size &&
+         record_nonce_stored == other.record_nonce_stored;
 }
 
 void* EncryptionBuffer::GetBuffer(size_t size_needed) {

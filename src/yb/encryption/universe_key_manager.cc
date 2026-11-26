@@ -14,9 +14,12 @@
 #include "yb/encryption/universe_key_manager.h"
 
 #include "yb/util/flags.h"
+#include "yb/util/logging.h"
 #include "yb/util/status_format.h"
 
 #include "yb/util/debug-util.h"
+
+DECLARE_bool(enable_encryption_gcm);
 
 namespace yb {
 namespace encryption {
@@ -71,12 +74,20 @@ Result<UniverseKeyParams> UniverseKeyManager::GetLatestUniverseParams() {
 }
 
 Result<EncryptionAlgorithmPB> UniverseKeyManager::GetEncryptionAlgorithm() {
-  if (auto algorithm = EncryptionAlgorithmOverride()) {
-    return *algorithm;
+  auto algorithm = EncryptionAlgorithmOverride();
+  if (!algorithm) {
+    std::lock_guard l(mutex_);
+    SCHECK(received_universe_key_registry_, IllegalState, "Universe key registry not received");
+    algorithm = universe_key_registry_.encryption_algorithm();
   }
-  std::lock_guard l(mutex_);
-  SCHECK(received_universe_key_registry_, IllegalState, "Universe key registry not received");
-  return universe_key_registry_.encryption_algorithm();
+  if (!FLAGS_enable_encryption_gcm &&
+      VERIFY_RESULT(AlgorithmCipherMode(*algorithm)) == CipherMode::kGcm) {
+    YB_LOG_EVERY_N_SECS(WARNING, 60)
+        << EncryptionAlgorithmName(*algorithm) << " requested but enable_encryption_gcm is not "
+        << "promoted; writing AES-CTR files";
+    return CtrAlgorithmWithKeySizeOf(*algorithm);
+  }
+  return *algorithm;
 }
 
 

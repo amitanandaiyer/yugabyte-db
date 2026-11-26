@@ -63,6 +63,7 @@
 #include "yb/util/logging.h"
 #include "yb/util/mem_tracker.h"
 #include "yb/util/pb_util.h"
+#include "yb/util/record_cipher.h"
 #include "yb/util/ref_cnt_buffer.h"
 #include "yb/util/result.h"
 #include "yb/util/size_literals.h"
@@ -148,6 +149,47 @@ const size_t kLogSegmentHeaderMagicAndHeaderLength = 12;
 const size_t kLogSegmentFooterMagicAndFooterLength  = 12;
 
 const size_t kEntryHeaderSize = 12;
+
+namespace {
+
+// With AES-GCM, every record the log writes is sealed with the segment's record cipher
+// (RandomAccessFile/WritableFile::record_cipher). Lengths, CRCs and offsets in the segment refer to
+// the sealed bytes, so framing, scanning and the log index work unchanged. The record's kind and
+// offset are authenticated, so a record cannot be moved or passed off as another kind.
+YB_DEFINE_ENUM(WalRecordKind,
+    ((kHeader, 1))((kEntryBatch, 2))((kIndexBlockHeader, 3))((kIndexBlockData, 4))((kFooter, 5)));
+
+constexpr size_t kWalRecordAadSize = 1 + sizeof(uint64_t);
+
+std::array<char, kWalRecordAadSize> WalRecordAad(WalRecordKind kind, uint64_t offset) {
+  std::array<char, kWalRecordAadSize> aad;
+  aad[0] = static_cast<char>(kind);
+  InlineEncodeFixed64(reinterpret_cast<uint8_t*>(aad.data()) + 1, offset);
+  return aad;
+}
+
+// offset identifies the record in its AAD. position is where the sealed bytes start, which the
+// record cipher may use for the nonce; it must differ between records, and does even where two
+// records share an AAD offset (an index block's header and data).
+Status SealWalRecord(
+    const RecordCipher& cipher, WalRecordKind kind, uint64_t offset, uint64_t position,
+    Slice plaintext, faststring* sealed) {
+  sealed->resize(plaintext.size() + cipher.Overhead());
+  const auto aad = WalRecordAad(kind, offset);
+  return cipher.Seal(position, Slice(aad.data(), aad.size()), plaintext, sealed->data());
+}
+
+// plaintext must have room for sealed.size() - cipher.Overhead() bytes.
+Status OpenWalRecord(
+    const RecordCipher& cipher, WalRecordKind kind, uint64_t offset, uint64_t position,
+    Slice sealed, uint8_t* plaintext) {
+  SCHECK_GE(sealed.size(), cipher.Overhead(), Corruption,
+            Format("Sealed WAL $0 at offset $1 is too short", kind, offset));
+  const auto aad = WalRecordAad(kind, offset);
+  return cipher.Open(position, Slice(aad.data(), aad.size()), sealed, plaintext);
+}
+
+} // namespace
 
 const int kLogMajorVersion = 1;
 const int kLogMinorVersion = 0;
@@ -451,9 +493,21 @@ Result<bool> ReadableLogSegment::ReadHeader() {
                                   header_size, &header_slice, header_space.data()),
                                       "Unable to read fully");
 
+  std::vector<uint8_t> header_plaintext;
+  if (const auto* cipher = readable_file_->record_cipher()) {
+    SCHECK_GE(header_slice.size(), cipher->Overhead(), Corruption, "Sealed header is too short");
+    header_plaintext.resize(header_slice.size() - cipher->Overhead());
+    RETURN_NOT_OK_PREPEND(
+        OpenWalRecord(
+            *cipher, WalRecordKind::kHeader, kLogSegmentHeaderMagicAndHeaderLength,
+            kLogSegmentHeaderMagicAndHeaderLength, header_slice, header_plaintext.data()),
+        Format("Log segment header of $0", path_));
+    header_slice = Slice(header_plaintext.data(), header_plaintext.size());
+  }
+
   RETURN_NOT_OK_PREPEND(pb_util::ParseFromArray(&header,
                                                 header_slice.data(),
-                                                header_size),
+                                                header_slice.size()),
                         "Unable to parse protobuf");
   DCHECK(header.IsInitialized()) << "Log segment header must be initialized";
 
@@ -563,9 +617,21 @@ Status ReadableLogSegment::ReadFooter() {
                                   footer_size, &footer_slice, footer_space.data()),
                         "Footer not found. Could not read fully.");
 
+  std::vector<uint8_t> footer_plaintext;
+  if (const auto* cipher = readable_file_->record_cipher()) {
+    SCHECK_GE(footer_slice.size(), cipher->Overhead(), Corruption, "Sealed footer is too short");
+    footer_plaintext.resize(footer_slice.size() - cipher->Overhead());
+    RETURN_NOT_OK_PREPEND(
+        OpenWalRecord(
+            *cipher, WalRecordKind::kFooter, footer_offset, footer_offset, footer_slice,
+            footer_plaintext.data()),
+        Format("Log segment footer of $0", path_));
+    footer_slice = Slice(footer_plaintext.data(), footer_plaintext.size());
+  }
+
   RETURN_NOT_OK_PREPEND(pb_util::ParseFromArray(&footer,
                                                 footer_slice.data(),
-                                                footer_size),
+                                                footer_slice.size()),
                         "Unable to parse protobuf");
 
   footer_.Swap(&footer);
@@ -608,7 +674,9 @@ int64_t ReadableLogSegment::ReadEntriesUpTo() {
       // Read up to start of persisted log index.
       return footer_.index_start_offset();
     }
-    return file_size() - footer_.ByteSize() - kLogSegmentFooterMagicAndFooterLength;
+    const auto* cipher = readable_file_->record_cipher();
+    return file_size() - footer_.ByteSize() - (cipher ? cipher->Overhead() : 0) -
+           kLogSegmentFooterMagicAndFooterLength;
   }
   // We likely crashed and always read to the end (or up to recalculated readable_to_offset).
   return readable_to_offset();
@@ -1021,8 +1089,23 @@ Result<std::shared_ptr<LWLogEntryBatchPB>> ReadableLogSegment::ReadEntryBatch(
                                      header.msg_crc, read_crc));
   }
 
+  const auto stored_size = entry_batch_slice.size();
+  if (const auto* cipher = readable_file()->record_cipher()) {
+    SCHECK_GE(stored_size, cipher->Overhead(), Corruption,
+              Format("Sealed log entry at offset $0 is too short", *offset));
+    RefCntBuffer plaintext(stored_size - cipher->Overhead());
+    // The writer authenticated the offset of the entry header, which precedes the batch.
+    RETURN_NOT_OK_PREPEND(
+        OpenWalRecord(
+            *cipher, WalRecordKind::kEntryBatch, *offset - kEntryHeaderSize, *offset,
+            entry_batch_slice, plaintext.udata()),
+        Format("Log entry at offset $0 in $1", *offset, path_));
+    holder->buffer = plaintext;
+    entry_batch_slice = plaintext.AsSlice();
+  }
+
   auto batch = holder->arena.NewArenaObject<LWLogEntryBatchPB>();
-  s = batch->ParseFromSlice(entry_batch_slice.Prefix(header.msg_length));
+  s = batch->ParseFromSlice(entry_batch_slice);
   if (!s.ok()) {
     return STATUS_FORMAT(
         Corruption, "Failed to parse PB at offset: $0, length: $1. Cause: $2", *offset,
@@ -1041,7 +1124,7 @@ Result<std::shared_ptr<LWLogEntryBatchPB>> ReadableLogSegment::ReadEntryBatch(
     holder->consumed = actual_memory_used;
   }
 
-  *offset += entry_batch_slice.size();
+  *offset += stored_size;
   return SharedField(holder, batch);
 }
 
@@ -1065,17 +1148,30 @@ Result<LogIndexBlock> ReadableLogSegment::ReadIndexBlock(
       header_size, 1_MB, Corruption,
       Format("Got too big header size $0 at offset $1 inside $2", header_size, offset, path()));
 
-  tmp_buf->resize(header_size);
-  RETURN_NOT_OK(ReadFully(readable_file_.get(), *offset, header_size, &slice, tmp_buf->data()));
+  const auto* cipher = readable_file_->record_cipher();
+  faststring sealed;
+  auto* read_buf = cipher ? &sealed : tmp_buf;
+  read_buf->resize(header_size);
+  RETURN_NOT_OK(ReadFully(readable_file_.get(), *offset, header_size, &slice, read_buf->data()));
   RSTATUS_DCHECK_EQ(
       slice.size(), header_size, InternalError,
       Format("Header size mismatch at offset $0 inside $1", offset, path()));
   *offset += header_size;
+  if (cipher) {
+    SCHECK_GE(slice.size(), cipher->Overhead(), Corruption, "Sealed index header is too short");
+    tmp_buf->resize(slice.size() - cipher->Overhead());
+    RETURN_NOT_OK_PREPEND(
+        OpenWalRecord(
+            *cipher, WalRecordKind::kIndexBlockHeader, start_offset,
+            start_offset + sizeof(int64_t), slice, tmp_buf->data()),
+        Format("Log index block header at offset $0 in $1", start_offset, path_));
+    slice = Slice(tmp_buf->data(), tmp_buf->size());
+  }
   RETURN_NOT_OK(pb_util::ParseFromArray(&block_header, slice.data(), slice.size()));
 
   const auto block_size = block_header.size();
-  tmp_buf->resize(block_size);
-  RETURN_NOT_OK(ReadFully(readable_file_.get(), *offset, block_size, &slice, tmp_buf->data()));
+  read_buf->resize(block_size);
+  RETURN_NOT_OK(ReadFully(readable_file_.get(), *offset, block_size, &slice, read_buf->data()));
   RSTATUS_DCHECK_EQ(
       slice.size(), block_size, InternalError,
       Format("Block size mismatch at offset $0 inside $1", offset, path()));
@@ -1088,6 +1184,17 @@ Result<LogIndexBlock> ReadableLogSegment::ReadIndexBlock(
         "Checksum mismatch for log index block of size $0 from file $1 at offset $2: found=$3, "
         "computed=$4",
         block_size, path(), start_offset, block_header.crc32c(), computed_crc);
+  }
+
+  if (cipher) {
+    SCHECK_GE(slice.size(), cipher->Overhead(), Corruption, "Sealed index block is too short");
+    tmp_buf->resize(slice.size() - cipher->Overhead());
+    RETURN_NOT_OK_PREPEND(
+        OpenWalRecord(
+            *cipher, WalRecordKind::kIndexBlockData, start_offset, start_offset, slice,
+            tmp_buf->data()),
+        Format("Log index block at offset $0 in $1", start_offset, path_));
+    slice = Slice(tmp_buf->data(), tmp_buf->size());
   }
 
   return LogIndexBlock {
@@ -1126,10 +1233,19 @@ Status WritableLogSegment::WriteHeader(const LogSegmentHeaderPB& new_header) {
 
   // First the magic.
   buf.append(kLogSegmentHeaderMagicString);
-  // Then Length-prefixed header.
-  PutFixed32(&buf, new_header.ByteSize());
-  // Then Serialize the PB.
-  RETURN_NOT_OK(pb_util::AppendToString(new_header, &buf));
+  // Then the length-prefixed header PB.
+  faststring header_pb;
+  RETURN_NOT_OK(pb_util::AppendToString(new_header, &header_pb));
+  Slice header_record(header_pb);
+  faststring sealed;
+  if (const auto* cipher = writable_file()->record_cipher()) {
+    RETURN_NOT_OK(SealWalRecord(
+        *cipher, WalRecordKind::kHeader, kLogSegmentHeaderMagicAndHeaderLength,
+        kLogSegmentHeaderMagicAndHeaderLength, header_pb, &sealed));
+    header_record = Slice(sealed);
+  }
+  PutFixed32(&buf, narrow_cast<uint32_t>(header_record.size()));
+  buf.append(header_record.data(), header_record.size());
   RETURN_NOT_OK(writable_file()->Append(Slice(buf)));
 
   header_.CopyFrom(new_header);
@@ -1165,12 +1281,21 @@ Status WritableLogSegment::WriteIndexWithFooterAndClose(
     }
   }
 
+  faststring footer_pb;
+  footer_pb.reserve(footer->ByteSizeLong());
+  RETURN_NOT_OK(pb_util::AppendToString(*footer, &footer_pb));
   faststring buf;
-  buf.reserve(footer->ByteSizeLong());
-  RETURN_NOT_OK(pb_util::AppendToString(*footer, &buf));
+  if (const auto* cipher = writable_file()->record_cipher()) {
+    const auto footer_offset = writable_file()->Size();
+    RETURN_NOT_OK(SealWalRecord(
+        *cipher, WalRecordKind::kFooter, footer_offset, footer_offset, Slice(footer_pb), &buf));
+  } else {
+    buf.append(footer_pb.data(), footer_pb.size());
+  }
+  const auto footer_record_size = buf.size();
 
   buf.append(kLogSegmentFooterMagicString);
-  PutFixed32(&buf, footer->ByteSize());
+  PutFixed32(&buf, narrow_cast<uint32_t>(footer_record_size));
 
   RETURN_NOT_OK_PREPEND(writable_file()->Append(Slice(buf)), "Could not write the footer");
 
@@ -1182,9 +1307,17 @@ Status WritableLogSegment::WriteIndexWithFooterAndClose(
   return Status::OK();
 }
 
-Status WritableLogSegment::WriteEntryBatch(const Slice& data) {
+Status WritableLogSegment::WriteEntryBatch(const Slice& plaintext) {
   DCHECK(is_header_written_);
   DCHECK(!is_footer_written_);
+  Slice data = plaintext;
+  if (const auto* cipher = writable_file_->record_cipher()) {
+    const auto entry_offset = writable_file_->Size();
+    RETURN_NOT_OK(SealWalRecord(
+        *cipher, WalRecordKind::kEntryBatch, entry_offset, entry_offset + kEntryHeaderSize,
+        plaintext, &sealed_record_buffer_));
+    data = Slice(sealed_record_buffer_);
+  }
   uint8_t header_buf[kEntryHeaderSize];
 
   // First encode the length of the message.
@@ -1252,24 +1385,46 @@ Status WritableLogSegment::WriteIndex(
 }
 
 Status WritableLogSegment::WriteIndexBlock(const LogIndexBlock& index_block) {
+  // Both sealed parts authenticate the offset of the index block's start, since the header's
+  // stored size depends on the data's sealed size and CRC.
+  const auto* cipher = writable_file_->record_cipher();
+  const uint64_t start_offset = writable_file_->Size();
+  Slice data = index_block.data;
+  faststring sealed_data;
+  if (cipher) {
+    RETURN_NOT_OK(SealWalRecord(
+        *cipher, WalRecordKind::kIndexBlockData, start_offset, start_offset, index_block.data,
+        &sealed_data));
+    data = Slice(sealed_data);
+  }
+
   LogIndexBlockHeaderPB header;
 
   header.set_start_op_index(index_block.start_op_index);
   header.set_num_entries(index_block.num_entries);
-  header.set_size(index_block.data.size());
+  header.set_size(data.size());
   header.set_is_last_block(index_block.is_last_block);
-  header.set_crc32c(crc::Crc32c(index_block.data.data(), index_block.data.size()));
+  header.set_crc32c(crc::Crc32c(data.data(), data.size()));
 
+  index_block_header_buffer_.clear();
   index_block_header_buffer_.reserve(header.ByteSizeLong());
 
   RETURN_NOT_OK(pb_util::AppendToString(header, &index_block_header_buffer_));
+  Slice header_record(index_block_header_buffer_);
+  faststring sealed_header;
+  if (cipher) {
+    RETURN_NOT_OK(SealWalRecord(
+        *cipher, WalRecordKind::kIndexBlockHeader, start_offset, start_offset + sizeof(int64_t),
+        header_record, &sealed_header));
+    header_record = Slice(sealed_header);
+  }
 
   uint8_t size_buf[sizeof(int64_t)];
-  InlineEncodeFixed64(size_buf, index_block_header_buffer_.size());
+  InlineEncodeFixed64(size_buf, header_record.size());
 
   RETURN_NOT_OK(writable_file_->Append(Slice(size_buf, sizeof(int64_t))));
-  RETURN_NOT_OK(writable_file_->Append(Slice(index_block_header_buffer_)));
-  return writable_file_->Append(index_block.data);
+  RETURN_NOT_OK(writable_file_->Append(header_record));
+  return writable_file_->Append(data);
 }
 
 Status WritableLogSegment::Sync() {
