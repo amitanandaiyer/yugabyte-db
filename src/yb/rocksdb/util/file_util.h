@@ -51,6 +51,16 @@ Status CopyFile(
     yb::PriorityThreadPoolSuspender* suspender = nullptr,
     const std::atomic<bool>* shutting_down = nullptr);
 
+// Copies an SST file. One whose blocks are sealed with AES-GCM is copied byte for byte, header
+// included, through raw_env, which must be plaintext: through env, the sealed blocks would land in
+// a file with a new data key and fail authentication. The copy keeps the source's key and nonces,
+// which is safe because its contents are identical and an SST is never appended to.
+Status CopyTableFile(
+    Env* env, Env* raw_env, const std::string& source, const std::string& destination,
+    CopyFileSync sync = CopyFileSync::kFalse, const EnvOptions& env_options = EnvOptions(),
+    yb::PriorityThreadPoolSuspender* suspender = nullptr,
+    const std::atomic<bool>* shutting_down = nullptr);
+
 // Recursively delete the specified directory.
 Status DeleteRecursively(Env* env, const std::string& dirname);
 

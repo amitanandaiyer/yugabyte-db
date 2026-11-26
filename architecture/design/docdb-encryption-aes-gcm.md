@@ -79,6 +79,13 @@ it writes the header and passes bytes through, and exposes a `yb::RecordCipher` 
 `GcmLayoutForFile` (`.sst`, `.sblock.`); an SST written under another name would silently get the
 chunked layout.
 
+**Copies keep the source's key.** The file layer doesn't re-seal a record file's bytes, so copying an
+SST through the encrypted env would put blocks sealed under the source's data key into a file with
+a new key. Copies of block-sealed SSTs are therefore byte for byte, header included, through the
+plaintext `checkpoint_env`: checkpoints already copy this way, and `CopyTableFile` does so for
+`DBPathMoveCompaction` and `AddFile`. Reusing the key and nonces is safe because the copy's contents
+are identical and it is never appended to.
+
 **Rejected: fixed-size chunks in the file layer** (the first prototype, 4 KB chunks for every file).
 It needs no RocksDB changes, but blocks don't line up with chunks, so a block read decrypts and
 verifies up to two extra partial chunks, and the plaintext↔file offset mapping leaks into

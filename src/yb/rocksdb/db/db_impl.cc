@@ -2870,13 +2870,14 @@ Status DBImpl::ExecuteDBPathMoveCompaction(
   //
   // shutting_down_ makes a copy in flight give up as soon as DB shutdown starts: ~DBImpl waits
   // for this task like for any compaction, and CompactionJob polls the same flag for that reason.
-  Status status = CopyFile(
-      env_, src_base_path, dst_base_path, /* size = */ 0, CopyFileSync::kTrue, env_options_,
+  Status status = CopyTableFile(
+      env_, checkpoint_env_, src_base_path, dst_base_path, CopyFileSync::kTrue, env_options_,
       suspender, &shutting_down_);
   if (status.ok() && is_split_sst) {
-    status = CopyFile(
-        env_, TableBaseToDataFileName(src_base_path), TableBaseToDataFileName(dst_base_path),
-        /* size = */ 0, CopyFileSync::kTrue, env_options_, suspender, &shutting_down_);
+    status = CopyTableFile(
+        env_, checkpoint_env_, TableBaseToDataFileName(src_base_path),
+        TableBaseToDataFileName(dst_base_path), CopyFileSync::kTrue, env_options_, suspender,
+        &shutting_down_);
   }
   if (status.ok()) {
     // CopyFileSync::kTrue only fsyncs the new file's own contents. Without also fsyncing its
@@ -4968,17 +4969,17 @@ namespace {
 
 // Helper function for copying file from src_path to dst_path. If try_hard_link is true it tries
 // to make a hard link instead of copyging if possible.
-Status AddFile(Env* env, const std::string& src_path, const std::string& dst_path,
+Status AddFile(Env* env, Env* raw_env, const std::string& src_path, const std::string& dst_path,
     bool try_hard_link) {
   Status status;
   if (try_hard_link) {
     status = env->LinkFile(src_path, dst_path);
     if (status.IsNotSupported()) {
       // Original file is on a different FS, use copy instead of hard linking
-      status = CopyFile(env, src_path, dst_path, 0);
+      status = CopyTableFile(env, raw_env, src_path, dst_path);
     }
   } else {
-    status = CopyFile(env, src_path, dst_path, 0);
+    status = CopyTableFile(env, raw_env, src_path, dst_path);
   }
   return status;
 }
@@ -5037,12 +5038,14 @@ Status DBImpl::AddFile(ColumnFamilyHandle* column_family,
 
     db_base_fname = TableFileName(
         db_options_.db_paths, meta.fd.GetNumber(), meta.fd.GetPathId());
-    status = ::rocksdb::AddFile(env_, file_info->file_path, db_base_fname, move_file);
+    status = ::rocksdb::AddFile(
+        env_, checkpoint_env_, file_info->file_path, db_base_fname, move_file);
 
     if (status.ok() && file_info->is_split_sst) {
       data_file_path = TableBaseToDataFileName(file_info->file_path);
       db_data_fname = TableBaseToDataFileName(db_base_fname);
-      status = ::rocksdb::AddFile(env_, data_file_path, db_data_fname, move_file);
+      status = ::rocksdb::AddFile(
+          env_, checkpoint_env_, data_file_path, db_data_fname, move_file);
       if (!status.ok()) {
         ::rocksdb::DeleteFile(env_, db_base_fname, db_options_.info_log,
             "AddFile() clean up for file %s failed : %s");

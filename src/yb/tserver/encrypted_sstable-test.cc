@@ -21,6 +21,7 @@
 #include "yb/encryption/universe_key_manager.h"
 
 #include "yb/rocksdb/db/dbformat.h"
+#include "yb/rocksdb/db/filename.h"
 #include "yb/rocksdb/db/log_reader.h"
 #include "yb/rocksdb/db/log_writer.h"
 #include "yb/rocksdb/table/block_based_table_factory.h"
@@ -29,6 +30,7 @@
 #include "yb/rocksdb/util/coding.h"
 #include "yb/rocksdb/util/crc32c.h"
 #include "yb/rocksdb/util/file_reader_writer.h"
+#include "yb/rocksdb/util/file_util.h"
 
 #include "yb/rocksutil/rocksdb_encrypted_file_factory.h"
 
@@ -192,8 +194,8 @@ void EncryptedSSTableTest::CounterOverflow(
   ASSERT_GE(eraf_data->TEST_GetNumOverflowWorkarounds(), 0);
 }
 
-// Writes an SST file pair with AES-GCM, reads it back, then flips one byte of the data file and
-// checks that the read fails.
+// Writes an SST file pair with AES-GCM, reads it back and reads back a copy, then flips one byte of
+// the data file and checks that the read fails.
 TEST(EncryptedGcmSSTableTest, WriteReadAndDetectTampering) {
   ASSERT_OK(SET_FLAG(encryption_algorithm_override, "AES_256_GCM"));
   ANNOTATE_UNPROTECTED_WRITE(FLAGS_enable_encryption_gcm) = true;
@@ -238,11 +240,12 @@ TEST(EncryptedGcmSSTableTest, WriteReadAndDetectTampering) {
 
   // Returns the number of keys read, or the first error. Uses a new table factory each time so
   // that the second read does not come from the first one's block cache.
-  auto read_all = [&]() -> Result<int> {
+  auto read_all = [&](const std::string& base_name) -> Result<int> {
     rocksdb::BlockBasedTableFactory table_factory;
     std::unique_ptr<rocksdb::RandomAccessFile> base_file, data_file;
-    RETURN_NOT_OK(env->NewRandomAccessFile(file_name, &base_file, rocksdb::EnvOptions()));
-    RETURN_NOT_OK(env->NewRandomAccessFile(data_file_name, &data_file, rocksdb::EnvOptions()));
+    RETURN_NOT_OK(env->NewRandomAccessFile(base_name, &base_file, rocksdb::EnvOptions()));
+    RETURN_NOT_OK(env->NewRandomAccessFile(
+        rocksdb::TableBaseToDataFileName(base_name), &data_file, rocksdb::EnvOptions()));
     SCHECK(base_file->IsEncrypted(), IllegalState, "File is not encrypted");
     // SST blocks are sealed one by one, not by the file layer.
     SCHECK(base_file->record_cipher() && data_file->record_cipher(), IllegalState,
@@ -269,13 +272,25 @@ TEST(EncryptedGcmSSTableTest, WriteReadAndDetectTampering) {
     return i;
   };
 
-  ASSERT_EQ(ASSERT_RESULT(read_all()), kNumKeys);
+  ASSERT_EQ(ASSERT_RESULT(read_all(file_name)), kNumKeys);
+
+  // A copy through the encrypted env puts the sealed blocks in a file with a new data key, so it
+  // can't be read. CopyTableFile copies them byte for byte instead.
+  const auto copy_name = JoinPathSegments(test_dir, "000011.sst");
+  for (const auto& [src, dst] : {std::pair(file_name, copy_name),
+                                 std::pair(data_file_name, copy_name + ".sblock.0")}) {
+    ASSERT_OK(rocksdb::CopyTableFile(env.get(), rocksdb::Env::Default(), src, dst));
+  }
+  ASSERT_EQ(ASSERT_RESULT(read_all(copy_name)), kNumKeys);
+  ASSERT_NOK(rocksdb::CopyTableFile(env.get(), env.get(), file_name, copy_name));
+  ASSERT_OK(rocksdb::CopyFile(env.get(), file_name, copy_name));
+  ASSERT_NOK(read_all(copy_name));
 
   faststring raw;
   ASSERT_OK(ReadFileToString(Env::Default(), data_file_name, &raw));
   raw.data()[raw.size() / 2] ^= 0x01;
   ASSERT_OK(WriteStringToFile(Env::Default(), Slice(raw), data_file_name));
-  auto result = read_all();
+  auto result = read_all(file_name);
   ASSERT_NOK(result);
   ASSERT_TRUE(result.status().IsCorruption()) << result.status();
 }
