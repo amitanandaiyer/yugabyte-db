@@ -18,6 +18,8 @@
 #include "yb/encryption/encryption_util.h"
 #include "yb/encryption/header_manager.h"
 
+#include "yb/util/status_format.h"
+
 namespace yb {
 namespace encryption {
 
@@ -132,6 +134,14 @@ class EncryptedFileFactory : public FileFactoryWrapper {
       if (file_encrypted) {
         if (universe_key_id != VERIFY_RESULT(header_manager_->GetLatestUniverseKeyId())) {
           return STATUS(NotSupported, "File's universe key id is not the latest universe key id");
+        }
+        // set_encryption_algorithm can change the data-key size without a key rotation. Starting a
+        // new segment makes the change reach the WAL at the next restart instead of at rollover.
+        const auto algorithm = VERIFY_RESULT(header_manager_->GetEncryptionAlgorithm());
+        if (stream->key_size() != VERIFY_RESULT(DataKeySize(algorithm))) {
+          return STATUS_FORMAT(
+              NotSupported, "File's $0-bit data key does not match the current algorithm $1",
+              stream->key_size() * 8, EncryptionAlgorithmName(algorithm));
         }
         auto new_opts = opts;
         new_opts.initial_offset = opts.initial_offset.value() + header_size;

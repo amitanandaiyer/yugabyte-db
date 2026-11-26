@@ -181,6 +181,22 @@ class EncryptionTest : public YBTableTestBase, public testing::WithParamInterfac
     }, 30s, Format("Wait for tservers to write $0-bit data keys", data_key_bits));
   }
 
+  // Number of encrypted WAL segments, across all tservers, with data_key_bits-bit data keys.
+  Result<uint64_t> CountWalSegments(uint32_t data_key_bits) {
+    uint64_t result = 0;
+    for (auto* ts : external_mini_cluster()->tserver_daemons()) {
+      auto doc = VERIFY_RESULT(GetEncryptionKeyReport(ts));
+      for (const auto& group : doc["report"]["groups"].GetArray()) {
+        if (std::string(group["category"].GetString()) == "Wal" &&
+            std::string(group["file_type"].GetString()) == "WalSegment" &&
+            group["encrypted"].GetBool() && group["data_key_bits"].GetUint() == data_key_bits) {
+          result += group["files"].GetUint64();
+        }
+      }
+    }
+    return result;
+  }
+
   // Paths, across all tservers, of RocksDB files protected by an AES-128 data key or universe key.
   // IDENTITY holds only a random DB id, is written once and never rewritten, so it is skipped.
   Result<std::vector<std::string>> Aes128RocksDBPaths(bool sst_only) {
@@ -480,6 +496,38 @@ TEST_F_EX(EncryptionTest, EncryptWALDataAfterWALReuse,
 TEST_F_EX(EncryptionTest, EncryptWALDataAfterWALReuseWithRotateKey,
     WALReuseEncryptionTest) {
   TestEncryptWALDataAfterWALReuse(true);
+}
+
+// set_encryption_algorithm without a key rotation reaches the WAL at the next restart: the last
+// segment, which has the old data-key size, is not reused.
+TEST_F_EX(EncryptionTest, WALNotReusedAfterKeySizeChange, WALReuseEncryptionTest) {
+  constexpr uint32_t kNumInsert = 100;
+  auto* tablet_server = external_mini_cluster()->tablet_server(0);
+  ASSERT_OK(WaitForDataKeyBits(256));
+  WriteWorkload(0, kNumInsert);
+  tablet_server->Shutdown();
+  ASSERT_OK(tablet_server->Restart());
+  ASSERT_OK(external_mini_cluster()->WaitForTabletsRunning(tablet_server, 30s));
+  ASSERT_EQ(ASSERT_RESULT(external_mini_cluster()->GetSegmentCounts(tablet_server)), 1);
+  ASSERT_EQ(ASSERT_RESULT(CountWalSegments(128)), 0);
+
+  ASSERT_OK(yb_admin_client_->SetEncryptionAlgorithm(
+      encryption::ENCRYPTION_ALGORITHM_AES_128_CTR));
+  ASSERT_OK(WaitForDataKeyBits(128));
+  tablet_server->Shutdown();
+  ASSERT_OK(tablet_server->Restart());
+  ASSERT_OK(external_mini_cluster()->WaitForTabletsRunning(tablet_server, 30s));
+  // Not reusing the segment makes the log allocate a new one, which happens in the background, and
+  // the old segment may already be garbage-collected, so wait for the new segment instead of
+  // counting segments.
+  ASSERT_OK(LoggedWaitFor([&]() -> Result<bool> {
+    return VERIFY_RESULT(CountWalSegments(128)) > 0;
+  }, 30s, "Wait for a WAL segment with 128-bit data keys"));
+
+  WriteWorkload(kNumInsert, 2 * kNumInsert);
+  ASSERT_NO_FATALS(VerifyWrittenRecords());
+  ClusterVerifier cv(external_mini_cluster());
+  ASSERT_NO_FATALS(cv.CheckCluster());
 }
 
 class WALRolloverTest : public EncryptionTest {
