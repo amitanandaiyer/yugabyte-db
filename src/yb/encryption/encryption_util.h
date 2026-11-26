@@ -66,7 +66,6 @@ struct EncryptionParams {
   CipherMode cipher_mode = CipherMode::kCtr;
   // The following apply to kGcm only; see EncryptionParamsPB.
   uint32_t gcm_chunk_size = 0;
-  bool allow_unauthenticated_tail = false;
   // kGcmRecord only; see EncryptionParamsPB.
   bool record_nonce_stored = false;
 

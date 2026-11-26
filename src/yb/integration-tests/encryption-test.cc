@@ -689,14 +689,15 @@ class EncryptionGcmTest : public EncryptionTest {
 };
 
 // Writes, flushes and compacts with AES-GCM, then kills a tserver, so that it reuses its last WAL
-// segments and reads MANIFEST files that end without a final chunk, and checks it recovers.
+// segments and reads back MANIFEST files that were never closed, and checks it recovers.
 TEST_F_EX(EncryptionTest, GcmWriteReadAndCrash, EncryptionGcmTest) {
   WriteWorkload(0, kNumKeys);
   ASSERT_NO_FATALS(VerifyWrittenRecords());
-  // SST blocks and WAL records are sealed by RocksDB and the log; the MANIFEST uses GCM chunks.
+  // SST blocks, MANIFEST records and WAL records are all sealed by their writers, so no SST or
+  // MANIFEST is in CTR or chunked GCM.
   ASSERT_EQ(ASSERT_RESULT(CountRocksDBFiles("CTR", /* sst_only= */ false)), 0);
+  ASSERT_EQ(ASSERT_RESULT(CountRocksDBFiles("GCM", /* sst_only= */ false)), 0);
   ASSERT_GT(ASSERT_RESULT(CountRocksDBFiles("GCM-record", /* sst_only= */ true)), 0);
-  ASSERT_GT(ASSERT_RESULT(CountRocksDBFiles("GCM", /* sst_only= */ false)), 0);
   ASSERT_EQ(ASSERT_RESULT(CountWalSegments("CTR")), 0);
   ASSERT_GT(ASSERT_RESULT(CountWalSegments("GCM-record")), 0);
 

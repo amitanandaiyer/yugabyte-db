@@ -97,23 +97,6 @@ TEST_P(GcmCipherTest, EmptyFinalChunk) {
   ASSERT_TRUE(cipher_->Open(4, true, Slice(), tag_slice, nullptr).IsCorruption());
 }
 
-// The bytes of a chunk that has not been sealed yet decrypt to the same plaintext without the tag.
-TEST_P(GcmCipherTest, UnauthenticatedDecryptMatchesSealedChunk) {
-  auto plaintext = RandomBytes(kChunkSize);
-  std::vector<uint8_t> ciphertext, tag;
-  ASSERT_NO_FATALS(Seal(5, /* final= */ false, plaintext, &ciphertext, &tag));
-
-  for (int i = 0; i < 100; ++i) {
-    const size_t begin = RandomUniformInt<size_t>(0, kChunkSize - 1);
-    const size_t len = RandomUniformInt<size_t>(1, kChunkSize - begin);
-    std::vector<uint8_t> decrypted(len);
-    ASSERT_OK(cipher_->DecryptUnauthenticated(
-        5, begin, Slice(ciphertext.data() + begin, len), decrypted.data()));
-    ASSERT_EQ(Slice(decrypted.data(), len), Slice(plaintext.data() + begin, len))
-        << "begin: " << begin << ", len: " << len;
-  }
-}
-
 class GcmRecordCipherTest : public YBTest, public testing::WithParamInterface<bool> {
  protected:
   void SetUp() override {

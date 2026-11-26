@@ -168,8 +168,8 @@ Clusters that enabled encryption at rest before AES-256 became the default, or w
 
 By default, data files are encrypted with AES in CTR mode, which keeps data confidential but does not detect changes to the encrypted files. In GCM mode, data is also authenticated, and reading data that was modified fails with a corruption error:
 
-- Each data file block and each WAL record carries its own 16-byte authentication tag. WAL records also store a 12-byte nonce.
-- Other files, such as RocksDB `MANIFEST` files and tablet metadata, are encrypted in 4 KB chunks, each with a 16-byte tag.
+- Each data file block, each WAL record, and each RocksDB `MANIFEST` record carries its own 16-byte authentication tag. WAL records also store a 12-byte nonce.
+- Other files, such as tablet metadata, are encrypted in 4 KB chunks, each with a 16-byte tag.
 
 To switch a cluster to GCM:
 
@@ -184,8 +184,6 @@ To switch a cluster to GCM:
     YB-TServers pick up the change on their next heartbeat to the YB-Master leader. Existing files stay in CTR mode, and remain readable, until they are rewritten.
 
 1. To rewrite existing data in GCM mode, follow the restart, compaction and verification steps in [Migrate an existing cluster to AES-256](#migrate-an-existing-cluster-to-aes-256). The restart also moves each tablet's WAL to GCM. The encryption key report shows each file's `cipher_mode`.
-
-RocksDB `MANIFEST` files are appended to over time. If a YB-TServer crashes, the data written to a `MANIFEST` since its last complete 4 KB chunk is not authenticated when the node restarts.
 
 ## Disable encryption
 

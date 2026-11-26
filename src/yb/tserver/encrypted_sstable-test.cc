@@ -21,9 +21,13 @@
 #include "yb/encryption/universe_key_manager.h"
 
 #include "yb/rocksdb/db/dbformat.h"
+#include "yb/rocksdb/db/log_reader.h"
+#include "yb/rocksdb/db/log_writer.h"
 #include "yb/rocksdb/table/block_based_table_factory.h"
 #include "yb/rocksdb/table/internal_iterator.h"
 #include "yb/rocksdb/table/table_builder.h"
+#include "yb/rocksdb/util/coding.h"
+#include "yb/rocksdb/util/crc32c.h"
 #include "yb/rocksdb/util/file_reader_writer.h"
 
 #include "yb/rocksutil/rocksdb_encrypted_file_factory.h"
@@ -276,42 +280,120 @@ TEST(EncryptedGcmSSTableTest, WriteReadAndDetectTampering) {
   ASSERT_TRUE(result.status().IsCorruption()) << result.status();
 }
 
-// A RocksDB MANIFEST is appended to for the life of the DB, so after a crash it ends without a
-// final chunk, and must still be readable.
-TEST(EncryptedGcmSSTableTest, ManifestTail) {
+namespace {
+
+struct StatusReporter : public rocksdb::log::Reader::Reporter {
+  void Corruption(size_t bytes, const Status& s) override {
+    if (status.ok()) {
+      status = s;
+    }
+  }
+  Status status;
+};
+
+} // namespace
+
+// MANIFEST records are sealed one by one by log::Writer, including records split across 32 KB
+// log blocks, and a modified record fails authentication even with its CRC recomputed.
+TEST(EncryptedGcmSSTableTest, ManifestRecords) {
   ASSERT_OK(SET_FLAG(encryption_algorithm_override, "AES_256_GCM"));
   ANNOTATE_UNPROTECTED_WRITE(FLAGS_enable_encryption_gcm) = true;
   string test_dir;
   ASSERT_OK(Env::Default()->GetTestDirectory(&test_dir));
   auto universe_key_manager = GenerateTestUniverseKeyManager();
   auto env = yb::NewRocksDBEncryptedEnv(DefaultHeaderManager(universe_key_manager.get()));
-  const auto data = RandomHumanReadableString(10000);
+  const auto path = JoinPathSegments(test_dir, "MANIFEST-000001");
+  const std::vector<std::string> records = {
+      RandomHumanReadableString(100),
+      RandomHumanReadableString(rocksdb::log::kBlockSize * 2 + 100),
+      RandomHumanReadableString(rocksdb::log::kBlockSize - 2 * rocksdb::log::kHeaderSize),
+      "",
+      RandomHumanReadableString(1000),
+  };
 
-  for (const auto* name : {"MANIFEST-000001", "OPTIONS-000001"}) {
-    const auto path = JoinPathSegments(test_dir, name);
+  {
     std::unique_ptr<rocksdb::WritableFile> file;
     ASSERT_OK(env->NewWritableFile(path, &file, rocksdb::EnvOptions()));
-    ASSERT_OK(file->Append(data));
-    ASSERT_OK(file->Sync());
-    ANNOTATE_UNPROTECTED_WRITE(FLAGS_TEST_encryption_gcm_skip_close_on_destroy) = true;
-    file.reset();
-    ANNOTATE_UNPROTECTED_WRITE(FLAGS_TEST_encryption_gcm_skip_close_on_destroy) = false;
-
-    std::unique_ptr<rocksdb::RandomAccessFile> reader;
-    auto s = env->NewRandomAccessFile(path, &reader, rocksdb::EnvOptions());
-    Result<uint64_t> size = s.ok() ? reader->Size() : Result<uint64_t>(s);
-    if (std::string(name).starts_with("MANIFEST-")) {
-      ASSERT_EQ(ASSERT_RESULT(std::move(size)), data.size());
-      std::vector<uint8_t> buf(data.size());
-      Slice result;
-      ASSERT_OK(reader->Read(0, data.size(), &result, buf.data()));
-      ASSERT_EQ(result, Slice(data));
-    } else {
-      // Other files without their final chunk are reported as corrupt.
-      ASSERT_NOK(size);
-      ASSERT_TRUE(size.status().IsCorruption()) << size.status();
+    ASSERT_TRUE(file->record_cipher());
+    // A MANIFEST is never reopened for append, so the nonce is derived from the record's offset.
+    ASSERT_EQ(file->record_cipher()->Overhead(), 16U);
+    rocksdb::log::Writer writer(
+        std::make_unique<rocksdb::WritableFileWriter>(
+            std::move(file), rocksdb::EnvOptions(), /* suspender= */ nullptr),
+        /* log_number= */ 0, /* recycle_log_files= */ false);
+    for (const auto& record : records) {
+      ASSERT_OK(writer.AddRecord(record));
     }
+    ASSERT_OK(writer.file()->Sync(/* use_fsync= */ false));
   }
+
+  auto read_all = [&]() -> Result<std::vector<std::string>> {
+    std::unique_ptr<rocksdb::SequentialFile> file;
+    RETURN_NOT_OK(env->NewSequentialFile(path, &file, rocksdb::EnvOptions()));
+    StatusReporter reporter;
+    rocksdb::log::Reader reader(
+        /* info_log= */ nullptr, std::make_unique<rocksdb::SequentialFileReader>(std::move(file)),
+        &reporter, /* checksum= */ true, /* initial_offset= */ 0, /* log_num= */ 0);
+    std::vector<std::string> result;
+    Slice record;
+    std::string scratch;
+    while (reader.ReadRecord(&record, &scratch)) {
+      result.push_back(record.ToBuffer());
+    }
+    RETURN_NOT_OK(reporter.status);
+    return result;
+  };
+
+  ASSERT_EQ(ASSERT_RESULT(read_all()), records);
+
+  faststring raw;
+  ASSERT_OK(ReadFileToString(Env::Default(), path, &raw));
+  ASSERT_EQ(raw.ToString().find(records[0]), std::string::npos);
+
+  // Modify the first record, which is a single physical record at the start of the log, and
+  // recompute its CRC.
+  std::unique_ptr<rocksdb::RandomAccessFile> raw_reader;
+  ASSERT_OK(env->NewRandomAccessFile(path, &raw_reader, rocksdb::EnvOptions()));
+  uint8_t* header = raw.data() + raw_reader->GetEncryptionHeaderSize();
+  const size_t length = header[4] | (header[5] << 8);
+  ASSERT_EQ(header[6], static_cast<uint8_t>(rocksdb::log::kFullType));
+  uint8_t* payload = header + rocksdb::log::kHeaderSize;
+  payload[length / 2] ^= 0x01;
+  const auto crc = rocksdb::crc32c::Extend(
+      rocksdb::crc32c::Value(reinterpret_cast<const char*>(header + 6), 1),
+      reinterpret_cast<const char*>(payload), length);
+  rocksdb::EncodeFixed32(reinterpret_cast<char*>(header), rocksdb::crc32c::Mask(crc));
+  ASSERT_OK(WriteStringToFile(Env::Default(), Slice(raw), path));
+
+  auto result = read_all();
+  ASSERT_NOK(result);
+  ASSERT_TRUE(result.status().IsCorruption()) << result.status();
+  ASSERT_STR_CONTAINS(result.status().ToString(), "authentication failed");
+}
+
+// Chunked files are written in full and closed; one cut short by a crash is reported as corrupt.
+TEST(EncryptedGcmSSTableTest, ChunkedFileWithoutFinalChunk) {
+  ASSERT_OK(SET_FLAG(encryption_algorithm_override, "AES_256_GCM"));
+  ANNOTATE_UNPROTECTED_WRITE(FLAGS_enable_encryption_gcm) = true;
+  string test_dir;
+  ASSERT_OK(Env::Default()->GetTestDirectory(&test_dir));
+  auto universe_key_manager = GenerateTestUniverseKeyManager();
+  auto env = yb::NewRocksDBEncryptedEnv(DefaultHeaderManager(universe_key_manager.get()));
+  const auto path = JoinPathSegments(test_dir, "OPTIONS-000001");
+
+  std::unique_ptr<rocksdb::WritableFile> file;
+  ASSERT_OK(env->NewWritableFile(path, &file, rocksdb::EnvOptions()));
+  ASSERT_OK(file->Append(RandomHumanReadableString(10000)));
+  ASSERT_OK(file->Sync());
+  ANNOTATE_UNPROTECTED_WRITE(FLAGS_TEST_encryption_gcm_skip_close_on_destroy) = true;
+  file.reset();
+  ANNOTATE_UNPROTECTED_WRITE(FLAGS_TEST_encryption_gcm_skip_close_on_destroy) = false;
+
+  std::unique_ptr<rocksdb::RandomAccessFile> reader;
+  ASSERT_OK(env->NewRandomAccessFile(path, &reader, rocksdb::EnvOptions()));
+  auto size = reader->Size();
+  ASSERT_NOK(size);
+  ASSERT_TRUE(size.status().IsCorruption()) << size.status();
 }
 
 TEST_P(EncryptedSSTableTest, CounterOverflow10MKeys) {

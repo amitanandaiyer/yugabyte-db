@@ -32,10 +32,6 @@ namespace yb::encryption {
 // cannot be reordered, and the per-file random data key keeps IVs unique across files. The only
 // additional authenticated data is a final flag, set on the empty chunk that ends a complete file,
 // so a file truncated at a chunk boundary is detected.
-//
-// GCM encrypts with CTR starting at counter 2, so a chunk's ciphertext can be written as plaintext
-// arrives and its tag appended once the chunk is full. Until then the bytes can be decrypted, but
-// not authenticated, with DecryptUnauthenticated.
 class GcmChunkCipher {
  public:
   static constexpr size_t kTagSize = 16;
@@ -47,9 +43,6 @@ class GcmChunkCipher {
   // Returns Corruption if the tag does not match.
   Status Open(
       uint64_t index, bool final, Slice ciphertext, Slice tag, uint8_t* plaintext) const;
-
-  Status DecryptUnauthenticated(
-      uint64_t index, size_t offset_in_chunk, Slice ciphertext, uint8_t* plaintext) const;
 
   // Encrypts one chunk at a time as plaintext arrives. Not thread safe.
   class Sealer {

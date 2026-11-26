@@ -38,9 +38,7 @@ message EncryptionParamsPB {
   EncryptionCipherModePB cipher_mode = 5;
   // GCM (chunked) only: plaintext bytes per authenticated chunk.
   uint32 gcm_chunk_size = 6;
-  // GCM only: a reader accepts a missing final chunk and decrypts a trailing partial chunk without
-  // authentication. Set for files that are appended to over time and can be cut short by a crash.
-  bool allow_unauthenticated_tail = 7;
+  reserved 7;
   // GCM record only: each record stores its nonce. Otherwise the nonce is derived from the file
   // nonce and the record's position, which is only safe for files that are never rewritten (SSTs).
   bool record_nonce_stored = 8;

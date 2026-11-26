@@ -15,7 +15,7 @@ are handled differently.
 |---|---|---|---|
 | SST data (`.sst`, `.sblock.N`) | Each RocksDB block, plus the footer | File nonce XOR block offset, not stored | 16 B per block |
 | WAL segment | Each record: header, entry batch, index block header and data, footer | Per-writer-session random base XOR record offset, stored with the record | 28 B per record |
-| RocksDB MANIFEST | 4 KB chunks; a tail cut short by a crash is accepted | File nonce XOR chunk index | 16 B per 4 KB |
+| RocksDB MANIFEST | Each record (version edit) | File nonce XOR record offset, not stored | 16 B per record |
 | Everything else (CURRENT, OPTIONS, tablet and consensus metadata) | 4 KB chunks, plus an empty final chunk | File nonce XOR chunk index | 16 B per 4 KB, plus 16 B |
 
 The envelope scheme is unchanged: every file has its own random data key in its header, wrapped by
@@ -169,11 +169,21 @@ adds the cipher check.
 
 ## Other files
 
-- **MANIFEST** is appended to for the life of a DB and must be readable after a crash, but its
-  records are written by RocksDB's `log::Writer` with its own 32 KB block format. It stays chunked:
-  full chunks are authenticated, and a reader accepts a missing final chunk and decrypts the
-  remaining partial chunk (less than 4 KB plus a torn tag) without authentication; the MANIFEST's
-  own CRCs then find its end. Sealing MANIFEST records in `log::Writer` would close this gap.
+- **MANIFEST** is appended to and synced after every version edit, and must be readable after a
+  crash. `log::Writer::AddRecord` seals each logical record before splitting it into physical
+  records, and `log::Reader::ReadRecord` opens it after reassembling it; both act only when the
+  file has a record cipher. A torn last record is dropped by the log's CRCs before GCM sees it, as
+  without encryption, so every record that is returned is authenticated.
+  - Nonce: the file nonce XOR the offset of the record's first physical record
+    (`LastRecordOffset`), not stored. Safe because RocksDB never reopens a MANIFEST for append: it
+    starts a new one on every DB open and when it exceeds `max_manifest_file_size`. A write-once
+    record file refuses to be reopened, so a future change that reuses a MANIFEST fails at open
+    instead of repeating a nonce.
+  - Checkpoints copy the MANIFEST byte for byte through `checkpoint_env` (`Env::Default()`), so
+    the copy keeps the original key and nonces.
+  - Rejected: chunks with an unauthenticated tail (the first prototype). A chunk can't be sealed
+    until it fills, so after a crash up to 4 KB of the newest version edits were read without
+    authentication.
 - **All other files** use strict chunks: closing the file appends an empty chunk with AAD final=1,
   and a missing final chunk is `Corruption`. Writers seal on destruction if `Close` was not called,
   because RocksDB writes CURRENT through `WriteStringToFile` without closing it.
@@ -184,6 +194,8 @@ adds the cipher check.
 
 - **Truncation of the active WAL segment.** Dropping whole trailing records leaves a valid prefix.
   Closed segments are covered by the sealed footer; Raft replicas cover the active tail.
+- **Truncation of the MANIFEST.** Dropping whole trailing version edits rolls the DB back to an
+  earlier file list. A lost flush edit is recovered by WAL replay.
 - **Swapping whole files.** Two complete encrypted files (header and body) can be exchanged without
   the encryption layer noticing; RocksDB and the log check file numbers and sequence numbers.
 - **Data-key wrapping** is still AES-CTR under the universe key with a fixed nonce. A modified header
@@ -195,6 +207,5 @@ adds the cipher check.
 
 - Benchmark CTR vs per-block/record GCM: block cache behaviour, SST read latency, WAL append
   latency, and the 28 B per WAL record.
-- Seal MANIFEST records instead of chunks.
 - YBA, yugabyted and Java client support for the GCM algorithms.
 - Upgrade test promoting `enable_encryption_gcm`; backup/restore and xCluster with GCM.

@@ -31,6 +31,8 @@
 
 #include "yb/gutil/macros.h"
 
+#include "yb/util/record_cipher.h"
+
 using std::unique_ptr;
 
 namespace rocksdb {
@@ -93,6 +95,30 @@ bool Reader::SkipToInitialBlock() {
 // restrict the inconsistency to only the last log
 bool Reader::ReadRecord(Slice* record, std::string* scratch,
                         WALRecoveryMode wal_recovery_mode) {
+  if (!ReadRawRecord(record, scratch, wal_recovery_mode)) {
+    return false;
+  }
+  const auto* cipher = file_->file()->record_cipher();
+  if (!cipher) {
+    return true;
+  }
+  if (record->size() < cipher->Overhead()) {
+    ReportCorruption(record->size(), "record is shorter than its authentication overhead");
+    return false;
+  }
+  opened_record_.resize(record->size() - cipher->Overhead());
+  const auto status = cipher->Open(
+      last_record_offset_, Slice(), *record, reinterpret_cast<uint8_t*>(opened_record_.data()));
+  if (!status.ok()) {
+    ReportDrop(record->size(), status);
+    return false;
+  }
+  *record = Slice(opened_record_);
+  return true;
+}
+
+bool Reader::ReadRawRecord(Slice* record, std::string* scratch,
+                           WALRecoveryMode wal_recovery_mode) {
   if (last_record_offset_ < initial_offset_) {
     if (!SkipToInitialBlock()) {
       return false;

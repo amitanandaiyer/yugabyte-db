@@ -34,22 +34,20 @@ constexpr size_t kTagSize = GcmChunkCipher::kTagSize;
 
 GcmRandomAccessFile::GcmRandomAccessFile(
     std::unique_ptr<yb::RandomAccessFile> file, std::unique_ptr<GcmChunkCipher> cipher,
-    uint64_t header_size, bool allow_unauthenticated_tail)
+    uint64_t header_size)
     : RandomAccessFileWrapper(std::move(file)), cipher_(std::move(cipher)),
-      header_size_(header_size), allow_unauthenticated_tail_(allow_unauthenticated_tail) {}
+      header_size_(header_size) {}
 
 Result<GcmRandomAccessFile::Layout> GcmRandomAccessFile::GetLayout() const {
   {
     std::lock_guard l(mutex_);
-    if (complete_layout_) {
-      return *complete_layout_;
+    if (layout_) {
+      return *layout_;
     }
   }
   auto layout = VERIFY_RESULT(ComputeLayout());
-  if (layout.complete) {
-    std::lock_guard l(mutex_);
-    complete_layout_ = layout;
-  }
+  std::lock_guard l(mutex_);
+  layout_ = layout;
   return layout;
 }
 
@@ -77,29 +75,14 @@ Result<GcmRandomAccessFile::Layout> GcmRandomAccessFile::ComputeLayout() const {
         const size_t partial = rem == 0 ? 0 : rem - kTagSize;
         return Layout{
             .full_chunks = full_chunks,
-            .complete = true,
-            .tail_size = partial,
+            .partial_size = partial,
             .plaintext_size = full_chunks * chunk_size + partial,
         };
       }
     }
   }
-
-  if (!allow_unauthenticated_tail_) {
-    return STATUS_FORMAT(
-        Corruption, "$0: AES-GCM encrypted file has no valid final chunk", filename());
-  }
-  // Bytes after the last full chunk, possibly including a sealed partial chunk's tag or a torn
-  // final chunk, are returned without authentication; the caller's own format must find where its
-  // data ends.
-  const uint64_t full_chunks = body / stride;
-  const size_t tail = std::min<uint64_t>(body % stride, chunk_size);
-  return Layout{
-      .full_chunks = full_chunks,
-      .complete = false,
-      .tail_size = tail,
-      .plaintext_size = full_chunks * chunk_size + tail,
-  };
+  return STATUS_FORMAT(
+      Corruption, "$0: AES-GCM encrypted file has no valid final chunk", filename());
 }
 
 Result<uint64_t> GcmRandomAccessFile::Size() const {
@@ -125,30 +108,21 @@ Status GcmRandomAccessFile::Read(
     const uint64_t pos = offset + done;
     const uint64_t index = pos / chunk_size;
     const size_t offset_in_chunk = pos % chunk_size;
-    const size_t chunk_len = index < layout.full_chunks ? chunk_size : layout.tail_size;
+    const size_t chunk_len = index < layout.full_chunks ? chunk_size : layout.partial_size;
     const size_t take = std::min<size_t>(n - done, chunk_len - offset_in_chunk);
     const uint64_t chunk_start = header_size_ + index * stride;
     Slice raw_slice;
 
-    if (index < layout.full_chunks || layout.complete) {
-      RETURN_NOT_OK(RandomAccessFileWrapper::Read(
-          chunk_start, chunk_len + kTagSize, &raw_slice, raw.data()));
-      SCHECK_EQ(raw_slice.size(), chunk_len + kTagSize, Corruption,
-                Format("$0: short read of AES-GCM chunk $1", filename(), index));
-      RETURN_NOT_OK_PREPEND(
-          cipher_->Open(
-              index, /* final= */ false, raw_slice.Prefix(chunk_len),
-              raw_slice.Suffix(kTagSize), plain.data()),
-          filename());
-      memcpy(scratch + done, plain.data() + offset_in_chunk, take);
-    } else {
-      RETURN_NOT_OK(RandomAccessFileWrapper::Read(
-          chunk_start + offset_in_chunk, take, &raw_slice, raw.data()));
-      SCHECK_EQ(raw_slice.size(), take, Corruption,
-                Format("$0: short read of AES-GCM tail", filename()));
-      RETURN_NOT_OK(cipher_->DecryptUnauthenticated(
-          index, offset_in_chunk, raw_slice, scratch + done));
-    }
+    RETURN_NOT_OK(RandomAccessFileWrapper::Read(
+        chunk_start, chunk_len + kTagSize, &raw_slice, raw.data()));
+    SCHECK_EQ(raw_slice.size(), chunk_len + kTagSize, Corruption,
+              Format("$0: short read of AES-GCM chunk $1", filename(), index));
+    RETURN_NOT_OK_PREPEND(
+        cipher_->Open(
+            index, /* final= */ false, raw_slice.Prefix(chunk_len),
+            raw_slice.Suffix(kTagSize), plain.data()),
+        filename());
+    memcpy(scratch + done, plain.data() + offset_in_chunk, take);
     done += take;
   }
   *result = Slice(scratch, n);
@@ -160,8 +134,8 @@ GcmWritableFile::GcmWritableFile(
     : WritableFileWrapper(std::move(file)), cipher_(std::move(cipher)), sealer_(*cipher_) {}
 
 // Some writers, such as RocksDB's WriteStringToFile for CURRENT, rely on the destructor to close
-// the file, as PosixWritableFile does. A process that crashes runs no destructor, so its files keep
-// their unauthenticated tail.
+// the file, as PosixWritableFile does. A process that crashes runs no destructor, so its open files
+// have no final chunk and can't be read.
 GcmWritableFile::~GcmWritableFile() {
   if (!closed_ && !FLAGS_TEST_encryption_gcm_skip_close_on_destroy) {
     WARN_NOT_OK(Close(), Format("Failed to close AES-GCM encrypted file $0", filename()));
@@ -277,8 +251,7 @@ Result<std::unique_ptr<yb::RandomAccessFile>> NewGcmRandomAccessFile(
   }
   auto cipher = VERIFY_RESULT(GcmChunkCipher::Create(*header.params));
   return std::make_unique<GcmRandomAccessFile>(
-      std::move(underlying), std::move(cipher), header.header_size,
-      header.params->allow_unauthenticated_tail);
+      std::move(underlying), std::move(cipher), header.header_size);
 }
 
 Result<std::unique_ptr<yb::WritableFile>> NewGcmWritableFile(

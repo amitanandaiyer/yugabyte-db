@@ -27,10 +27,8 @@ YB_DEFINE_ENUM(CipherMode, (kCtr)(kGcm)(kGcmRecord));
 YB_DEFINE_ENUM(GcmFileLayout,
     // Fixed-size chunks sealed by the file layer; a missing final chunk is corruption.
     (kChunks)
-    // As kChunks, but a reader accepts a file cut short by a crash (RocksDB MANIFEST).
-    (kChunksWithUnauthenticatedTail)
     // The writer seals each record with record_cipher(), and the file is never rewritten: each
-    // nonce is derived from the record's position and not stored (SST blocks).
+    // nonce is derived from the record's position and not stored (SST blocks, MANIFEST records).
     (kWriteOnceRecords)
     // The writer seals each record with record_cipher(), and may rewrite records after reopening
     // the file: each record stores its nonce (WAL entries).

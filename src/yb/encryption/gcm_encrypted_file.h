@@ -29,14 +29,12 @@ namespace yb::encryption {
 //
 // The partial chunk is present only when the plaintext size is not a multiple of B. The final
 // chunk is empty, authenticated with the final flag, and written on Close, so a complete file ends
-// with it. A file without it was cut short by a crash: its full chunks are authenticated and the
-// bytes after them are decrypted without authentication, which is accepted only for files whose
-// header sets allow_unauthenticated_tail.
+// with it. A file without it was cut short, and reading it returns Corruption.
 class GcmRandomAccessFile : public RandomAccessFileWrapper {
  public:
   GcmRandomAccessFile(
       std::unique_ptr<yb::RandomAccessFile> file, std::unique_ptr<GcmChunkCipher> cipher,
-      uint64_t header_size, bool allow_unauthenticated_tail);
+      uint64_t header_size);
 
   Status Read(uint64_t offset, size_t n, Slice* result, uint8_t* scratch) const override;
 
@@ -49,11 +47,8 @@ class GcmRandomAccessFile : public RandomAccessFileWrapper {
  private:
   struct Layout {
     uint64_t full_chunks;
-    // Whether the file ends with a valid final chunk.
-    bool complete;
-    // Complete: plaintext bytes in the sealed partial chunk, 0 if there is none.
-    // Not complete: plaintext bytes after the full chunks, which are not authenticated.
-    size_t tail_size;
+    // Plaintext bytes in the partial chunk, 0 if there is none.
+    size_t partial_size;
     uint64_t plaintext_size;
   };
 
@@ -62,11 +57,10 @@ class GcmRandomAccessFile : public RandomAccessFileWrapper {
 
   std::unique_ptr<GcmChunkCipher> cipher_;
   const uint64_t header_size_;
-  const bool allow_unauthenticated_tail_;
 
   // A complete file never changes, so its layout is computed once.
   mutable std::mutex mutex_;
-  mutable std::optional<Layout> complete_layout_;
+  mutable std::optional<Layout> layout_;
 };
 
 // Encrypts as data is appended, writing each chunk's tag once the chunk is full and the partial and
@@ -147,6 +141,7 @@ class GcmSequentialFile : public yb::SequentialFile {
   Status Read(size_t n, Slice* result, uint8_t* scratch) override;
   Status Skip(uint64_t n) override;
   const std::string& filename() const override { return file_->filename(); }
+  const RecordCipher* record_cipher() const override { return file_->record_cipher(); }
 
  private:
   std::unique_ptr<yb::RandomAccessFile> file_;

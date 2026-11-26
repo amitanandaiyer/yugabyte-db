@@ -27,8 +27,6 @@ namespace yb::encryption {
 namespace {
 
 constexpr size_t kIvSize = 12;
-// GCM uses counter 1 for the tag and starts encrypting at counter 2.
-constexpr uint32_t kFirstDataCounter = 2;
 
 struct CtxDeleter {
   void operator()(EVP_CIPHER_CTX* ctx) const { EVP_CIPHER_CTX_free(ctx); }
@@ -46,15 +44,6 @@ const EVP_CIPHER* GcmCipher(uint32_t key_size) {
     case 16: return EVP_aes_128_gcm();
     case 24: return EVP_aes_192_gcm();
     case 32: return EVP_aes_256_gcm();
-  }
-  return nullptr;
-}
-
-const EVP_CIPHER* CtrCipher(uint32_t key_size) {
-  switch (key_size) {
-    case 16: return EVP_aes_128_ctr();
-    case 24: return EVP_aes_192_ctr();
-    case 32: return EVP_aes_256_ctr();
   }
   return nullptr;
 }
@@ -124,36 +113,6 @@ Status GcmChunkCipher::Open(
     return STATUS_FORMAT(Corruption, "AES-GCM authentication failed for chunk $0", index);
   }
   return Status::OK();
-}
-
-Status GcmChunkCipher::DecryptUnauthenticated(
-    uint64_t index, size_t offset_in_chunk, Slice ciphertext, uint8_t* plaintext) const {
-  if (ciphertext.empty()) {
-    return Status::OK();
-  }
-  constexpr size_t kBlock = EncryptionParams::kBlockSize;
-  uint8_t iv[kBlock];
-  ChunkIv(index, iv);
-  BigEndian::Store32(
-      iv + kIvSize, narrow_cast<uint32_t>(kFirstDataCounter + offset_in_chunk / kBlock));
-
-  auto ctx = VERIFY_RESULT(NewContext());
-  RETURN_NOT_OK(CheckOpenSsl(
-      EVP_DecryptInit_ex(ctx.get(), CtrCipher(key_size_), nullptr, key_, iv),
-      "EVP_DecryptInit_ex"));
-  // Discard the keystream before offset_in_chunk within its block.
-  const size_t skip = offset_in_chunk % kBlock;
-  int len;
-  if (skip > 0) {
-    uint8_t scratch[kBlock] = {0};
-    RETURN_NOT_OK(CheckOpenSsl(
-        EVP_DecryptUpdate(ctx.get(), scratch, &len, scratch, narrow_cast<int>(skip)),
-        "EVP_DecryptUpdate"));
-  }
-  return CheckOpenSsl(
-      EVP_DecryptUpdate(
-          ctx.get(), plaintext, &len, ciphertext.data(), narrow_cast<int>(ciphertext.size())),
-      "EVP_DecryptUpdate");
 }
 
 GcmChunkCipher::Sealer::Sealer(const GcmChunkCipher& cipher)

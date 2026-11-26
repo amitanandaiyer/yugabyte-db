@@ -89,6 +89,8 @@ class Writer {
                   uint64_t log_number, bool recycle_log_files);
   ~Writer();
 
+  // If the file has a record cipher (an AES-GCM encrypted MANIFEST), the record is sealed before it
+  // is split into physical records.
   Status AddRecord(const Slice& slice);
 
   WritableFileWriter* file() { return dest_.get(); }
@@ -105,6 +107,7 @@ class Writer {
   // record type stored in the header.
   uint32_t type_crc_[kMaxRecordType + 1];
 
+  Status AddFragments(const Slice& slice);
   Status EmitPhysicalRecord(RecordType type, const char* ptr, size_t length);
 
   // No copying allowed

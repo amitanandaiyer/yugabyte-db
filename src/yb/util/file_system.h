@@ -89,6 +89,9 @@ class SequentialFile {
 
   // Returns the filename provided when the SequentialFile was constructed.
   virtual const std::string& filename() const = 0;
+
+  // See RandomAccessFile::record_cipher.
+  virtual const RecordCipher* record_cipher() const { return nullptr; }
 };
 
 class FileWithNameAndUniqueId {
@@ -386,6 +389,8 @@ class SequentialFileWrapper : public SequentialFile {
   Status InvalidateCache(size_t offset, size_t length) override;
 
   const std::string& filename() const override { return target_->filename(); }
+
+  const RecordCipher* record_cipher() const override { return target_->record_cipher(); }
 
  private:
   std::unique_ptr<SequentialFile> target_;

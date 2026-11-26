@@ -116,16 +116,14 @@ class RocksDBEncryptedWritableFile : public rocksdb::WritableFileWrapper {
   uint32_t header_size_;
 };
 
-// SST files are sealed block by block by BlockBasedTableBuilder, and are never rewritten. The
-// MANIFEST is appended to for the life of the DB and read back after a crash, so it can end without
-// a final chunk. Every other RocksDB file is written in full and closed.
+// SST files are sealed block by block by BlockBasedTableBuilder, and MANIFEST records by
+// log::Writer. Neither is ever reopened for append: RocksDB starts a new MANIFEST on each DB open.
+// Every other RocksDB file is written in full and closed.
 encryption::GcmFileLayout GcmLayoutForFile(const std::string& fname) {
   const auto base_name = BaseName(fname);
-  if (base_name.ends_with(".sst") || base_name.find(".sblock.") != std::string::npos) {
+  if (base_name.ends_with(".sst") || base_name.find(".sblock.") != std::string::npos ||
+      base_name.starts_with("MANIFEST-")) {
     return encryption::GcmFileLayout::kWriteOnceRecords;
-  }
-  if (base_name.starts_with("MANIFEST-")) {
-    return encryption::GcmFileLayout::kChunksWithUnauthenticatedTail;
   }
   return encryption::GcmFileLayout::kChunks;
 }

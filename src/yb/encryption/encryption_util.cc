@@ -120,7 +120,6 @@ void EncryptionParams::ToEncryptionParamsPB(EncryptionParamsPB* encryption_heade
     case CipherMode::kGcm:
       encryption_header->set_cipher_mode(ENCRYPTION_CIPHER_MODE_GCM);
       encryption_header->set_gcm_chunk_size(gcm_chunk_size);
-      encryption_header->set_allow_unauthenticated_tail(allow_unauthenticated_tail);
       break;
     case CipherMode::kGcmRecord:
       encryption_header->set_cipher_mode(ENCRYPTION_CIPHER_MODE_GCM_RECORD);
@@ -148,8 +147,6 @@ Result<EncryptionParamsPtr> EncryptionParams::FromEncryptionParamsPB(
       SCHECK_GT(encryption_header.gcm_chunk_size(), 0U, Corruption, "GCM chunk size is 0");
       encryption_params->cipher_mode = CipherMode::kGcm;
       encryption_params->gcm_chunk_size = encryption_header.gcm_chunk_size();
-      encryption_params->allow_unauthenticated_tail =
-          encryption_header.allow_unauthenticated_tail();
       break;
     case ENCRYPTION_CIPHER_MODE_GCM_RECORD:
       encryption_params->cipher_mode = CipherMode::kGcmRecord;
@@ -199,12 +196,9 @@ Result<EncryptionParamsPtr> EncryptionParams::NewEncryptionParams(
       FLAGS_TEST_encryption_use_openssl_compatible_counter_overflow;
   if (algorithm_mode == CipherMode::kGcm) {
     switch (gcm_layout) {
-      case GcmFileLayout::kChunks: [[fallthrough]];
-      case GcmFileLayout::kChunksWithUnauthenticatedTail:
+      case GcmFileLayout::kChunks:
         encryption_params->cipher_mode = CipherMode::kGcm;
         encryption_params->gcm_chunk_size = FLAGS_encryption_gcm_chunk_size_bytes;
-        encryption_params->allow_unauthenticated_tail =
-            gcm_layout == GcmFileLayout::kChunksWithUnauthenticatedTail;
         break;
       case GcmFileLayout::kWriteOnceRecords: [[fallthrough]];
       case GcmFileLayout::kRecords:
@@ -367,7 +361,6 @@ bool EncryptionParams::Equals(const EncryptionParams& other) {
          openssl_compatible_counter_overflow == other.openssl_compatible_counter_overflow &&
          cipher_mode == other.cipher_mode &&
          gcm_chunk_size == other.gcm_chunk_size &&
-         allow_unauthenticated_tail == other.allow_unauthenticated_tail &&
          record_nonce_stored == other.record_nonce_stored;
 }
 

@@ -26,11 +26,14 @@
 #include <stdint.h>
 
 #include <memory>
+#include <string>
 
 #include "yb/rocksdb/env.h"
 #include "yb/rocksdb/util/coding.h"
 #include "yb/rocksdb/util/crc32c.h"
 #include "yb/rocksdb/util/file_reader_writer.h"
+
+#include "yb/util/record_cipher.h"
 
 using std::unique_ptr;
 
@@ -53,6 +56,23 @@ Writer::~Writer() {
 }
 
 Status Writer::AddRecord(const Slice& slice) {
+  const auto* cipher = dest_->writable_file()->record_cipher();
+  if (!cipher) {
+    return AddFragments(slice);
+  }
+  // The record is sealed at the offset of its first physical record, which log::Reader reports as
+  // LastRecordOffset. The nonce is derived from that offset, so it binds the record to its place
+  // in the file and no AAD is needed.
+  const int header_size = recycle_log_files_ ? kRecyclableHeaderSize : kHeaderSize;
+  const int64_t leftover = kBlockSize - block_offset_;
+  const uint64_t position = dest_->GetFileSize() + (leftover < header_size ? leftover : 0);
+  std::string sealed(slice.size() + cipher->Overhead(), '\0');
+  RETURN_NOT_OK(cipher->Seal(
+      position, Slice(), slice, reinterpret_cast<uint8_t*>(sealed.data())));
+  return AddFragments(sealed);
+}
+
+Status Writer::AddFragments(const Slice& slice) {
   const char* ptr = slice.cdata();
   size_t left = slice.size();
 
